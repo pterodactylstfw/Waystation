@@ -29,23 +29,11 @@ public struct MainView: View {
                 }
                 .tag(AppTab.store)
 
-                VStack {
-                    Spacer()
-                    Image(systemName: AppTab.dropZone.iconName)
-                        .font(.system(size: 48))
-                        .foregroundStyle(.secondary)
-                    Text("Drop Zone")
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                        .padding(.top, 8)
-                    Text("Drag & drop CRX, ZIP, or unpacked extension folders")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-                .tabItem {
-                    Label(AppTab.dropZone.rawValue, systemImage: AppTab.dropZone.iconName)
-                }
-                .tag(AppTab.dropZone)
+                DropZoneView()
+                    .tabItem {
+                        Label(AppTab.dropZone.rawValue, systemImage: AppTab.dropZone.iconName)
+                    }
+                    .tag(AppTab.dropZone)
 
                 VStack {
                     Spacer()
