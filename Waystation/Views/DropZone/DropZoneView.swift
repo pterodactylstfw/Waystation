@@ -14,7 +14,7 @@ struct ShakeEffect: GeometryEffect {
 }
 
 /// Interactive drop zone view for unpacked extension folders, .zip, and .crx packages.
-/// Conforms to Story 1.2 acceptance criteria.
+/// Conforms to Story 1.2 and Story 1.3 acceptance criteria.
 public struct DropZoneView: View {
     @State private var viewModel = DropZoneViewModel()
     @State private var shakeAnimValue: CGFloat = 0
@@ -50,6 +50,20 @@ public struct DropZoneView: View {
             shakeAnimValue = 0
             withAnimation(.spring(response: 0.3, dampingFraction: 0.25, blendDuration: 0)) {
                 shakeAnimValue = 1
+            }
+        }
+        .sheet(isPresented: $viewModel.showIncompatibilitySheet) {
+            if let pending = viewModel.pendingIncompatiblePackage {
+                IncompatibilityWarningSheet(
+                    extensionName: pending.name,
+                    incompatibleAPIs: pending.validationResult.incompatibleAPIs,
+                    onProceed: {
+                        viewModel.proceedWithIncompatible()
+                    },
+                    onCancel: {
+                        viewModel.cancelIncompatible()
+                    }
+                )
             }
         }
     }
@@ -123,12 +137,35 @@ public struct DropZoneView: View {
                     .font(.title)
                     .fontWeight(.bold)
 
-                Text("Version \(package.version)")
-                    .font(.subheadline)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(Color.secondary.opacity(0.15))
-                    .clipShape(Capsule())
+                HStack(spacing: 8) {
+                    Text("Version \(package.version)")
+                        .font(.subheadline)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color.secondary.opacity(0.15))
+                        .clipShape(Capsule())
+
+                    Text("Manifest v\(package.metadata.manifestVersion)")
+                        .font(.subheadline)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Color.secondary.opacity(0.15))
+                        .clipShape(Capsule())
+                }
+            }
+
+            if !package.validationResult.incompatibleAPIs.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text("Contains unsupported Chrome APIs (\(package.validationResult.incompatibleAPIs.joined(separator: ", ")))")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.orange.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
             }
 
             VStack(alignment: .leading, spacing: 6) {
