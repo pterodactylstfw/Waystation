@@ -27,6 +27,8 @@ public final class AppState {
     public var isCheckingDoctor: Bool = false
     public var copiedCommandToast: Bool = false
 
+    public var logDrawerViewModel: LogDrawerViewModel
+
     /// Whether the warning banner should appear (if Command Line Tools are missing)
     public var showDoctorWarning: Bool {
         guard let report = doctorReport else { return false }
@@ -35,8 +37,12 @@ public final class AppState {
 
     private let doctorService: DoctorService
 
-    public init(doctorService: DoctorService = .shared) {
+    public init(
+        doctorService: DoctorService = .shared,
+        logDrawerViewModel: LogDrawerViewModel = .shared
+    ) {
         self.doctorService = doctorService
+        self.logDrawerViewModel = logDrawerViewModel
     }
 
     /// Verifies system developer prerequisites.

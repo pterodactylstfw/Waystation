@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Main container view coordinating the 3-tab layout and the Doctor environment diagnostics banner.
+/// Main container view coordinating the 3-tab layout, Doctor environment banner, and live log drawer.
 public struct MainView: View {
     @State private var appState = AppState()
 
@@ -53,6 +53,8 @@ public struct MainView: View {
                 }
                 .tag(AppTab.library)
             }
+
+            LogDrawerView(viewModel: appState.logDrawerViewModel)
         }
         .frame(minWidth: 900, minHeight: 620)
         .task {
