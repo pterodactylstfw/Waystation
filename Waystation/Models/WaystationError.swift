@@ -6,6 +6,7 @@ public enum WaystationError: LocalizedError, Sendable, Equatable {
     case commandLineToolsMissing
     case converterMissing
     case processExecutionFailed(command: String, exitCode: Int32, output: String)
+    case conversionFailed(reason: String, exitCode: Int32)
     case invalidManifest(reason: String)
     case incompatibleAPIs(apis: [String])
     case downloadFailed(reason: String)
@@ -23,6 +24,8 @@ public enum WaystationError: LocalizedError, Sendable, Equatable {
             return "Safari Web Extension Converter Not Found"
         case .processExecutionFailed(let command, let exitCode, _):
             return "Command '\(command)' failed with exit code \(exitCode)"
+        case .conversionFailed(let reason, let exitCode):
+            return "Safari conversion failed (code \(exitCode)): \(reason)"
         case .invalidManifest(let reason):
             return "Invalid manifest.json: \(reason)"
         case .incompatibleAPIs(let apis):
@@ -50,6 +53,8 @@ public enum WaystationError: LocalizedError, Sendable, Equatable {
             return "'safari-web-extension-converter' could not be located via xcrun."
         case .processExecutionFailed(_, let exitCode, let output):
             return "Process exited with code \(exitCode). Details: \(output.trimmingCharacters(in: .whitespacesAndNewlines))"
+        case .conversionFailed(let reason, let exitCode):
+            return "safari-web-extension-converter exited with code \(exitCode). Details: \(reason)"
         case .invalidManifest(let reason):
             return reason
         case .incompatibleAPIs(let apis):
@@ -77,6 +82,8 @@ public enum WaystationError: LocalizedError, Sendable, Equatable {
             return "Ensure Xcode is installed and selected with 'sudo xcode-select -s /Applications/Xcode.app'."
         case .processExecutionFailed:
             return "Check the build logs for specific error details."
+        case .conversionFailed:
+            return "Inspect the converter output in the log drawer and ensure extension manifest and assets are valid."
         case .invalidManifest:
             return "Ensure the extension contains a valid manifest.json file with manifest_version 2 or 3."
         case .incompatibleAPIs:

@@ -14,16 +14,25 @@ struct ShakeEffect: GeometryEffect {
 }
 
 /// Interactive drop zone view for unpacked extension folders, .zip, and .crx packages.
-/// Conforms to Story 1.2 and Story 1.3 acceptance criteria.
+/// Conforms to Story 1.2, Story 1.3, and Story 1.5 acceptance criteria.
+@MainActor
 public struct DropZoneView: View {
-    @State private var viewModel = DropZoneViewModel()
+    @State private var viewModel: DropZoneViewModel
     @State private var shakeAnimValue: CGFloat = 0
 
-    public init() {}
+    public init(viewModel: DropZoneViewModel) {
+        self._viewModel = State(initialValue: viewModel)
+    }
+
+    public init() {
+        self._viewModel = State(initialValue: DropZoneViewModel())
+    }
 
     public var body: some View {
         VStack(spacing: 24) {
-            if let package = viewModel.ingestedPackage {
+            if let project = viewModel.convertedProject {
+                convertedProjectCard(project)
+            } else if let package = viewModel.ingestedPackage {
                 packageDetailsCard(package)
             } else {
                 dropTargetBox
@@ -64,6 +73,15 @@ public struct DropZoneView: View {
                         viewModel.cancelIncompatible()
                     }
                 )
+            }
+        }
+        .alert("Conversion Failed", isPresented: $viewModel.showConversionErrorAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            if let err = viewModel.conversionError {
+                Text(err.localizedDescription + "\n\n" + (err.recoverySuggestion ?? ""))
+            } else {
+                Text("An unknown error occurred during conversion.")
             }
         }
     }
@@ -191,6 +209,108 @@ public struct DropZoneView: View {
                     Label("Choose Another", systemImage: "arrow.counterclockwise")
                 }
                 .buttonStyle(.bordered)
+                .disabled(viewModel.isConverting)
+
+                Button {
+                    Task {
+                        await viewModel.convertCurrentPackage()
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        if viewModel.isConverting {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Converting...")
+                        } else {
+                            Image(systemName: "safari.fill")
+                            Text("Convert to Safari Extension")
+                        }
+                    }
+                    .fontWeight(.semibold)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(viewModel.isConverting)
+            }
+        }
+        .padding(32)
+        .frame(maxWidth: 580)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color(nsColor: .controlBackgroundColor))
+                .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
+        )
+    }
+
+    private func convertedProjectCard(_ project: ConvertedProject) -> some View {
+        VStack(spacing: 20) {
+            ZStack {
+                Circle()
+                    .fill(Color.green.opacity(0.15))
+                    .frame(width: 72, height: 72)
+
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: 40))
+                    .foregroundStyle(.green)
+            }
+
+            VStack(spacing: 4) {
+                Text("Xcode Project Ready")
+                    .font(.title)
+                    .fontWeight(.bold)
+
+                Text(project.appName)
+                    .font(.headline)
+                    .foregroundStyle(.secondary)
+
+                Text(project.bundleIdentifier)
+                    .font(.caption)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 3)
+                    .background(Color.secondary.opacity(0.15))
+                    .clipShape(Capsule())
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Generated Xcode Project:")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Text(project.xcodeProjectURL.path)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(nsColor: .textBackgroundColor).opacity(0.6))
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+            .frame(maxWidth: 480)
+
+            HStack(spacing: 12) {
+                Button {
+                    viewModel.reset()
+                } label: {
+                    Label("Convert Another", systemImage: "arrow.counterclockwise")
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([project.xcodeProjectURL])
+                } label: {
+                    Label("Reveal in Finder", systemImage: "folder")
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    // Ready for Story 2/3 Build & Install
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "hammer.fill")
+                        Text("Ready to Build")
+                    }
+                    .fontWeight(.semibold)
+                }
+                .buttonStyle(.borderedProminent)
             }
         }
         .padding(32)

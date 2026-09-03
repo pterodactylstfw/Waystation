@@ -1,6 +1,6 @@
 import Foundation
 
-public struct IngestedPackage: Sendable, Identifiable {
+public struct IngestedPackage: Sendable, Identifiable, Equatable {
     public nonisolated let id = UUID()
     public let name: String
     public let version: String

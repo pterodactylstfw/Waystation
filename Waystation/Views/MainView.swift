@@ -29,7 +29,7 @@ public struct MainView: View {
                 }
                 .tag(AppTab.store)
 
-                DropZoneView()
+                DropZoneView(viewModel: DropZoneViewModel(logDrawerViewModel: appState.logDrawerViewModel))
                     .tabItem {
                         Label(AppTab.dropZone.rawValue, systemImage: AppTab.dropZone.iconName)
                     }
