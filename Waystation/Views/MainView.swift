@@ -11,7 +11,7 @@ public struct MainView: View {
             DoctorBannerView(appState: appState)
 
             TabView(selection: $appState.selectedTab) {
-                StoreView()
+                StoreView(logDrawerViewModel: appState.logDrawerViewModel)
                     .tabItem {
                         Label(AppTab.store.rawValue, systemImage: AppTab.store.iconName)
                     }

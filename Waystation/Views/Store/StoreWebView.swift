@@ -12,6 +12,17 @@ struct StoreWebView: NSViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
 
+        // Content controller with injected WebStoreScript
+        let userContentController = WKUserContentController()
+        let userScript = WKUserScript(
+            source: WebStoreScript.scriptSource,
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        )
+        userContentController.addUserScript(userScript)
+        userContentController.add(context.coordinator, name: "waystationHandler")
+        configuration.userContentController = userContentController
+
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
@@ -56,7 +67,7 @@ struct StoreWebView: NSViewRepresentable {
         }
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         var viewModel: StoreViewModel
         private var observations: [NSKeyValueObservation] = []
 
@@ -65,33 +76,77 @@ struct StoreWebView: NSViewRepresentable {
             super.init()
         }
 
+        // MARK: - WKScriptMessageHandler
+        func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+            guard message.name == "waystationHandler",
+                  let body = message.body as? [String: Any],
+                  let extensionId = body["extensionId"] as? String,
+                  let title = body["title"] as? String,
+                  let urlString = body["url"] as? String,
+                  let storeURL = URL(string: urlString),
+                  let payload = StoreExtensionPayload(extensionId: extensionId, title: title, storeURL: storeURL) else {
+                return
+            }
+
+            Task { @MainActor in
+                self.viewModel.handleAddToSafari(payload: payload)
+            }
+        }
+
         func setupObservers(for webView: WKWebView) {
             observations.append(webView.observe(\.canGoBack, options: [.new]) { [weak self] view, _ in
                 Task { @MainActor [weak self] in
-                    self?.viewModel.canGoBack = view.canGoBack
+                    guard let self = self else { return }
+                    self.viewModel.updateState(
+                        url: view.url,
+                        title: view.title,
+                        canGoBack: view.canGoBack,
+                        canGoForward: view.canGoForward,
+                        isLoading: view.isLoading,
+                        progress: view.estimatedProgress
+                    )
                 }
             })
 
             observations.append(webView.observe(\.canGoForward, options: [.new]) { [weak self] view, _ in
                 Task { @MainActor [weak self] in
-                    self?.viewModel.canGoForward = view.canGoForward
+                    guard let self = self else { return }
+                    self.viewModel.updateState(
+                        url: view.url,
+                        title: view.title,
+                        canGoBack: view.canGoBack,
+                        canGoForward: view.canGoForward,
+                        isLoading: view.isLoading,
+                        progress: view.estimatedProgress
+                    )
                 }
             })
 
             observations.append(webView.observe(\.title, options: [.new]) { [weak self] view, _ in
                 Task { @MainActor [weak self] in
-                    if let title = view.title {
-                        self?.viewModel.pageTitle = title
-                    }
+                    guard let self = self else { return }
+                    self.viewModel.updateState(
+                        url: view.url,
+                        title: view.title,
+                        canGoBack: view.canGoBack,
+                        canGoForward: view.canGoForward,
+                        isLoading: view.isLoading,
+                        progress: view.estimatedProgress
+                    )
                 }
             })
 
             observations.append(webView.observe(\.url, options: [.new]) { [weak self] view, _ in
                 Task { @MainActor [weak self] in
-                    if let url = view.url {
-                        self?.viewModel.currentURLString = url.absoluteString
-                        self?.viewModel.inputURLString = url.absoluteString
-                    }
+                    guard let self = self else { return }
+                    self.viewModel.updateState(
+                        url: view.url,
+                        title: view.title,
+                        canGoBack: view.canGoBack,
+                        canGoForward: view.canGoForward,
+                        isLoading: view.isLoading,
+                        progress: view.estimatedProgress
+                    )
                 }
             })
 
@@ -117,12 +172,17 @@ struct StoreWebView: NSViewRepresentable {
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             Task { @MainActor in
                 viewModel.isLoading = false
-                viewModel.canGoBack = webView.canGoBack
-                viewModel.canGoForward = webView.canGoForward
-                if let url = webView.url {
-                    viewModel.currentURLString = url.absoluteString
-                }
+                viewModel.updateState(
+                    url: webView.url,
+                    title: webView.title,
+                    canGoBack: webView.canGoBack,
+                    canGoForward: webView.canGoForward,
+                    isLoading: false,
+                    progress: 1.0
+                )
             }
+            // Re-evaluate script to ensure dynamic injection kicks in
+            webView.evaluateJavaScript(WebStoreScript.scriptSource, completionHandler: nil)
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {

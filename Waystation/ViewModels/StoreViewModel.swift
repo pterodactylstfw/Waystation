@@ -7,6 +7,7 @@ import WebKit
 @MainActor
 final class StoreViewModel {
     static let homeURL = URL(string: "https://chromewebstore.google.com")!
+    private static let detailRegex = try? NSRegularExpression(pattern: "/detail/(?:([^/]+)/)?([a-z]{32})")
 
     var currentURLString: String = "https://chromewebstore.google.com"
     var inputURLString: String = ""
@@ -15,6 +16,15 @@ final class StoreViewModel {
     var canGoForward: Bool = false
     var isLoading: Bool = false
     var estimatedProgress: Double = 0.0
+
+    // Extension detail detected from current page
+    var activeExtensionDetail: StoreExtensionPayload?
+
+    // Extension installation payload captured from "Add to Safari" button
+    var selectedExtension: StoreExtensionPayload?
+    var showInstallConfirmation: Bool = false
+
+    var logDrawerViewModel: LogDrawerViewModel?
 
     // Navigation triggers observed by StoreWebView
     var navigationAction: NavigationAction?
@@ -27,7 +37,8 @@ final class StoreViewModel {
         case stopLoading
     }
 
-    init() {
+    init(logDrawerViewModel: LogDrawerViewModel? = nil) {
+        self.logDrawerViewModel = logDrawerViewModel
         self.inputURLString = Self.homeURL.absoluteString
     }
 
@@ -81,13 +92,47 @@ final class StoreViewModel {
             if !self.isLoading || self.inputURLString.isEmpty {
                 self.inputURLString = url.absoluteString
             }
+            checkForExtensionDetailPage(url: url)
         }
         if let title = title, !title.isEmpty {
             self.pageTitle = title
+            // Refresh title if active detail was already detected
+            if let active = self.activeExtensionDetail, let url = url {
+                checkForExtensionDetailPage(url: url)
+            }
         }
         self.canGoBack = canGoBack
         self.canGoForward = canGoForward
         self.isLoading = isLoading
         self.estimatedProgress = progress
+    }
+
+    func checkForExtensionDetailPage(url: URL) {
+        let path = url.path
+        guard let regex = Self.detailRegex,
+              let match = regex.firstMatch(in: path, range: NSRange(location: 0, length: path.utf16.count)),
+              match.numberOfRanges >= 3,
+              let idRange = Range(match.range(at: 2), in: path) else {
+            self.activeExtensionDetail = nil
+            return
+        }
+
+        let extId = String(path[idRange])
+        var title = pageTitle.replacingOccurrences(of: " - Chrome Web Store", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if title.isEmpty || title == "Chrome Web Store" {
+            if let slugRange = Range(match.range(at: 1), in: path) {
+                title = String(path[slugRange]).replacingOccurrences(of: "-", with: " ").capitalized
+            } else {
+                title = "Chrome Extension"
+            }
+        }
+
+        self.activeExtensionDetail = StoreExtensionPayload(extensionId: extId, title: title, storeURL: url)
+    }
+
+    func handleAddToSafari(payload: StoreExtensionPayload) {
+        self.selectedExtension = payload
+        self.showInstallConfirmation = true
+        logDrawerViewModel?.append(line: "[Store] 'Add to Safari' clicked for '\(payload.title)' (ID: \(payload.extensionId))")
     }
 }

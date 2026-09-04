@@ -1,7 +1,11 @@
 import SwiftUI
 
 struct StoreView: View {
-    @State private var viewModel = StoreViewModel()
+    @State private var viewModel: StoreViewModel
+
+    init(logDrawerViewModel: LogDrawerViewModel? = nil) {
+        _viewModel = State(initialValue: StoreViewModel(logDrawerViewModel: logDrawerViewModel))
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -107,9 +111,24 @@ struct StoreView: View {
                 Divider()
             }
 
-            // Embedded Web View
+            // Embedded Web View with injected native "Add to Safari" button
             StoreWebView(viewModel: viewModel)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .alert(
+            "Add to Safari: \(viewModel.selectedExtension?.title ?? "Extension")",
+            isPresented: $viewModel.showInstallConfirmation
+        ) {
+            Button("Convert & Install", role: .none) {
+                // Story 2.3 will execute the one-click download & conversion pipeline
+            }
+            Button("Cancel", role: .cancel) {
+                viewModel.selectedExtension = nil
+            }
+        } message: {
+            if let ext = viewModel.selectedExtension {
+                Text("Extension ID: \(ext.extensionId)\nReady to download CRX package and launch Safari conversion pipeline.")
+            }
         }
     }
 }
