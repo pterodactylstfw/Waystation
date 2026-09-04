@@ -11,23 +11,11 @@ public struct MainView: View {
             DoctorBannerView(appState: appState)
 
             TabView(selection: $appState.selectedTab) {
-                VStack {
-                    Spacer()
-                    Image(systemName: AppTab.store.iconName)
-                        .font(.system(size: 48))
-                        .foregroundStyle(.secondary)
-                    Text("Chrome Web Store")
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                        .padding(.top, 8)
-                    Text("Coming in Epic 2: In-app browsing with 'Add to Safari' injection")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-                .tabItem {
-                    Label(AppTab.store.rawValue, systemImage: AppTab.store.iconName)
-                }
-                .tag(AppTab.store)
+                StoreView()
+                    .tabItem {
+                        Label(AppTab.store.rawValue, systemImage: AppTab.store.iconName)
+                    }
+                    .tag(AppTab.store)
 
                 DropZoneView(viewModel: DropZoneViewModel(logDrawerViewModel: appState.logDrawerViewModel))
                     .tabItem {
