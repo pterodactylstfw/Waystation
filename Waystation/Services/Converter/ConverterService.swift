@@ -1,37 +1,45 @@
 import Foundation
 
-/// Headless conversion service orchestrating Apple's `safari-web-extension-converter`.
-/// Conforms to AD-3, FR-6 and Story 1.5 acceptance criteria.
-public actor ConverterService {
-    public static let shared = ConverterService()
+/// Service coordinating the conversion of WebExtension packages into native Safari Web Extension Xcode projects.
+/// Conforms to AD-2, AD-3, AD-4, and Story 1.5 acceptance criteria.
+public struct ConverterService: Sendable {
+    public nonisolated static let shared = ConverterService()
 
-    private let fileManager = FileManager.default
     private let processRunner: ProcessRunner
+    private let fileManager = FileManager.default
 
-    public init(processRunner: ProcessRunner = .shared) {
+    public nonisolated init(processRunner: ProcessRunner = .shared) {
         self.processRunner = processRunner
     }
 
-    /// Converts an ingested Chrome extension into a native Safari Web Extension Xcode wrapper project.
+    /// Converts an ingested package into a native Xcode project and compiles the container app.
     public func convert(
         package: IngestedPackage,
         bundleIdentifier: String? = nil,
-        onOutputLine: (@Sendable (String) -> Void)? = nil
+        onOutputLine: ((String) -> Void)? = nil
     ) async throws -> ConvertedProject {
-        // 1. Prepare output directory in ~/Library/Caches/org.waystation.app/converted/<UUID>
-        let cachesDir = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        let projectLocationURL = cachesDir
-            .appendingPathComponent("org.waystation.app")
-            .appendingPathComponent("converted")
-            .appendingPathComponent(UUID().uuidString)
+        // 1. Prepare unique output directory inside ~/Library/Caches/org.waystation.app/converted/
+        let cacheBaseURL = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first!
+        let appConvertedBase = cacheBaseURL
+            .appendingPathComponent("org.waystation.app", isDirectory: true)
+            .appendingPathComponent("converted", isDirectory: true)
 
-        try fileManager.createDirectory(at: projectLocationURL, withIntermediateDirectories: true)
+        let projectLocationURL = appConvertedBase.appendingPathComponent(UUID().uuidString, isDirectory: true)
 
-        // 2. Sanitize app name and bundle identifier
+        do {
+            try fileManager.createDirectory(at: projectLocationURL, withIntermediateDirectories: true)
+        } catch {
+            throw WaystationError.conversionFailed(
+                reason: "Nu s-a putut crea directorul de conversie: \(error.localizedDescription)",
+                exitCode: 1
+            )
+        }
+
+        // 2. Sanitize app name and bundle identifier with matching casing
         let cleanAppName = sanitizeAppName(package.name)
         let resolvedBundleID = bundleIdentifier ?? ("org.waystation.ext." + sanitizeBundleID(cleanAppName))
 
-        onOutputLine?("Starting Safari Web Extension conversion for '\(package.name)'...")
+        onOutputLine?("Starting Safari Web Extension conversion for '\(cleanAppName)'...")
         onOutputLine?("Target location: \(projectLocationURL.path)")
         onOutputLine?("Bundle Identifier: \(resolvedBundleID)")
 
@@ -74,13 +82,119 @@ public actor ConverterService {
 
         onOutputLine?("Conversion succeeded! Xcode project ready at: \(xcodeProjURL.path)")
 
+        // 5. Patch project.pbxproj to fix macOS deployment target and bundle ID casing
+        patchXcodeProject(at: xcodeProjURL, appName: cleanAppName, bundleID: resolvedBundleID)
+
+        // 6. Build the container .app bundle and copy to ~/Library/Application Support/Waystation/Extensions/
+        var containerAppURL: URL?
+        do {
+            containerAppURL = try await buildAndStageContainerApp(
+                projectURL: xcodeProjURL,
+                appName: cleanAppName,
+                onOutputLine: onOutputLine
+            )
+        } catch {
+            onOutputLine?("[Build] Notice: Automatic container build warning: \(error.localizedDescription)")
+        }
+
         return ConvertedProject(
             appName: cleanAppName,
             bundleIdentifier: resolvedBundleID,
             projectLocationURL: projectLocationURL,
             xcodeProjectURL: xcodeProjURL,
+            containerAppURL: containerAppURL,
             sourcePackage: package
         )
+    }
+
+    private func patchXcodeProject(at projectURL: URL, appName: String, bundleID: String) {
+        let pbxprojURL = projectURL.appendingPathComponent("project.pbxproj")
+        guard let content = try? String(contentsOf: pbxprojURL, encoding: .utf8) else { return }
+
+        var updated = content.replacingOccurrences(
+            of: "MACOSX_DEPLOYMENT_TARGET = 10.14;",
+            with: "MACOSX_DEPLOYMENT_TARGET = 14.0;"
+        )
+
+        let lowercasedID = bundleID.lowercased()
+        if lowercasedID != bundleID {
+            updated = updated.replacingOccurrences(of: lowercasedID, with: bundleID)
+        }
+
+        try? updated.write(to: pbxprojURL, atomically: true, encoding: .utf8)
+    }
+
+    private func buildAndStageContainerApp(
+        projectURL: URL,
+        appName: String,
+        onOutputLine: ((String) -> Void)?
+    ) async throws -> URL? {
+        onOutputLine?("[Build] Compiling container application for '\(appName)'...")
+
+        let signingIdentity = await SigningManager.shared.detectSigningIdentity(onOutputLine: onOutputLine)
+
+        let buildArgs = [
+            "-project", projectURL.path,
+            "-scheme", appName,
+            "-destination", "platform=macOS",
+            "-configuration", "Release",
+            "CODE_SIGN_IDENTITY=\(signingIdentity)",
+            "CODE_SIGN_STYLE=Manual",
+            "-quiet",
+            "build"
+        ]
+
+        let buildResult = try await processRunner.run(
+            command: "/usr/bin/xcodebuild",
+            arguments: buildArgs,
+            onOutputLine: onOutputLine
+        )
+
+        guard buildResult.isSuccess else {
+            onOutputLine?("[Build] xcodebuild compilation failed. Container app can be built directly in Xcode.")
+            return nil
+        }
+
+        onOutputLine?("[Build] Container app compilation successful! Staging to Application Support...")
+
+        // Destination: ~/Library/Application Support/Waystation/Extensions/<appName>.app
+        let baseAppSupport = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let extensionsDir = baseAppSupport
+            .appendingPathComponent("Waystation", isDirectory: true)
+            .appendingPathComponent("Extensions", isDirectory: true)
+
+        try? fileManager.createDirectory(at: extensionsDir, withIntermediateDirectories: true)
+        let destinationAppURL = extensionsDir.appendingPathComponent("\(appName).app")
+
+        // Locate built .app in DerivedData
+        let derivedDataBase = fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Developer/Xcode/DerivedData")
+
+        var foundAppURL: URL?
+        if let enumerator = fileManager.enumerator(at: derivedDataBase, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+            for case let fileURL as URL in enumerator {
+                if fileURL.pathExtension == "app" && fileURL.lastPathComponent == "\(appName).app" {
+                    foundAppURL = fileURL
+                    break
+                }
+            }
+        }
+
+        if let builtApp = foundAppURL {
+            if fileManager.fileExists(atPath: destinationAppURL.path) {
+                try? fileManager.removeItem(at: destinationAppURL)
+            }
+            try fileManager.copyItem(at: builtApp, to: destinationAppURL)
+            onOutputLine?("[Build] Staged container app to '\(destinationAppURL.path)'.")
+
+            // Launch the container app to register the Safari extension
+            _ = try? await processRunner.run(command: "/usr/bin/open", arguments: [destinationAppURL.path], onOutputLine: nil)
+            onOutputLine?("[Build] Launched container app to register with Safari.")
+
+            return destinationAppURL
+        }
+
+        return nil
     }
 
     private func findXcodeProject(in directory: URL) -> URL? {
@@ -109,8 +223,7 @@ public actor ConverterService {
 
     private func sanitizeBundleID(_ raw: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".-_"))
-        let lowercased = raw.lowercased().replacingOccurrences(of: " ", with: "-")
-        let filtered = lowercased.unicodeScalars.filter { allowed.contains($0) }
+        let filtered = raw.replacingOccurrences(of: " ", with: "-").unicodeScalars.filter { allowed.contains($0) }
         let clean = String(String.UnicodeScalarView(filtered)).trimmingCharacters(in: CharacterSet(charactersIn: ".-_"))
         return clean.isEmpty ? "extension" : clean
     }

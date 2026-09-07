@@ -29,6 +29,7 @@ public final class AppState {
 
     public var logDrawerViewModel: LogDrawerViewModel
     public var dropZoneViewModel: DropZoneViewModel
+    public var libraryViewModel: LibraryViewModel
 
     /// Whether the warning banner should appear (if Command Line Tools are missing)
     public var showDoctorWarning: Bool {
@@ -45,6 +46,7 @@ public final class AppState {
         self.doctorService = doctorService
         self.logDrawerViewModel = logDrawerViewModel
         self.dropZoneViewModel = DropZoneViewModel(logDrawerViewModel: logDrawerViewModel)
+        self.libraryViewModel = LibraryViewModel(logDrawerViewModel: logDrawerViewModel)
     }
 
     /// Verifies system developer prerequisites.

@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// ViewModel managing state and user actions for the Drop Zone tab.
-/// Conforms to Story 1.2, Story 1.3, and Story 1.5 acceptance criteria.
+/// Conforms to Story 1.2, Story 1.3, Story 1.5, and Story 3.1 acceptance criteria.
 @Observable
 @MainActor
 public final class DropZoneViewModel {
@@ -24,14 +24,17 @@ public final class DropZoneViewModel {
     public let logDrawerViewModel: LogDrawerViewModel
     private let extractor: ArchiveExtractor
     private let converterService: ConverterService
+    private let registry: ExtensionRegistry
 
     public init(
         extractor: ArchiveExtractor = .shared,
         converterService: ConverterService = .shared,
+        registry: ExtensionRegistry = .shared,
         logDrawerViewModel: LogDrawerViewModel
     ) {
         self.extractor = extractor
         self.converterService = converterService
+        self.registry = registry
         self.logDrawerViewModel = logDrawerViewModel
     }
 
@@ -39,6 +42,7 @@ public final class DropZoneViewModel {
         self.init(
             extractor: .shared,
             converterService: .shared,
+            registry: .shared,
             logDrawerViewModel: .shared
         )
     }
@@ -94,6 +98,28 @@ public final class DropZoneViewModel {
                 }
             }
             self.convertedProject = project
+
+            // Story 3.1: Register converted extension in the persistent Library
+            var iconData: Data?
+            if let bestIconRelPath = package.metadata.icons.values.sorted(by: { $0.count > $1.count }).first {
+                let iconURL = package.stagedDirectoryURL.appendingPathComponent(bestIconRelPath)
+                iconData = try? Data(contentsOf: iconURL)
+            }
+
+            let extId = project.bundleIdentifier.replacingOccurrences(of: "org.waystation.ext.", with: "")
+            let installed = InstalledExtension(
+                id: extId.isEmpty ? UUID().uuidString : extId,
+                name: package.name,
+                version: package.version,
+                bundleIdentifier: project.bundleIdentifier,
+                containerAppPath: (project.containerAppURL ?? project.xcodeProjectURL).path,
+                installedDate: Date(),
+                lastSignedDate: Date(),
+                iconData: iconData
+            )
+            try? await registry.register(installed)
+            logDrawerViewModel.append(line: "[Library] Registered '\(installed.name)' in persistent extension registry.")
+
             self.isConverting = false
             self.logDrawerViewModel.isStreaming = false
         } catch let error as WaystationError {
@@ -139,5 +165,7 @@ public final class DropZoneViewModel {
         convertedProject = nil
         conversionError = nil
         errorMessage = nil
+        isProcessing = false
+        isConverting = false
     }
 }

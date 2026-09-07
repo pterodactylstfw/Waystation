@@ -28,19 +28,12 @@ public struct MainView: View {
                     }
                     .tag(AppTab.dropZone)
 
-                VStack {
-                    Spacer()
-                    Image(systemName: AppTab.library.iconName)
-                        .font(.system(size: 48))
-                        .foregroundStyle(.secondary)
-                    Text("Installed Extensions Library")
-                        .font(.title2)
-                        .fontWeight(.semibold)
-                        .padding(.top, 8)
-                    Text("Coming in Epic 3: 7-day certificate countdown & batch re-signing")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
+                LibraryView(
+                    viewModel: appState.libraryViewModel,
+                    onExploreStore: {
+                        appState.selectedTab = .store
+                    }
+                )
                 .tabItem {
                     Label(AppTab.library.rawValue, systemImage: AppTab.library.iconName)
                 }

@@ -1,36 +1,30 @@
 import Foundation
 
-/// Result of an executed command-line process.
-public struct ProcessResult: Sendable, Equatable {
+/// Represents the output and termination status of a completed process.
+public struct ProcessResult: Sendable {
     public let exitCode: Int32
     public let standardOutput: String
     public let standardError: String
 
-    public nonisolated var isSuccess: Bool {
+    public var isSuccess: Bool {
         exitCode == 0
     }
 
-    public nonisolated var combinedOutput: String {
-        if standardOutput.isEmpty { return standardError }
-        if standardError.isEmpty { return standardOutput }
-        return standardOutput + "\n" + standardError
-    }
-
-    public nonisolated init(exitCode: Int32, standardOutput: String, standardError: String) {
+    public init(exitCode: Int32, standardOutput: String, standardError: String) {
         self.exitCode = exitCode
         self.standardOutput = standardOutput
         self.standardError = standardError
     }
 }
 
-/// Isolated asynchronous process execution actor conforming to AD-2.
-/// Wraps Foundation `Process` and streams stdout/stderr lines continuously.
+/// Thread-safe actor coordinating subprocess execution conforming to AD-2.
+/// Eliminates deadlocks by draining pipe buffers asynchronously before awaiting termination.
 public actor ProcessRunner {
     public static let shared = ProcessRunner()
 
     public init() {}
 
-    /// Executes a process and awaits its completion, optionally streaming stdout and stderr line-by-line.
+    /// Executes a process and awaits its completion, streaming stdout and stderr line-by-line in real time.
     @discardableResult
     public func run(
         executableURL: URL,
@@ -58,58 +52,66 @@ public actor ProcessRunner {
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 
-        var outputData = Data()
-        var errorData = Data()
+        // Continuous streaming via readabilityHandler to prevent any pipe buffer overflow (64KB deadlock)
+        let stdoutCollector = SafeDataCollector()
+        let stderrCollector = SafeDataCollector()
 
-        let (stream, continuation) = AsyncStream<String>.makeStream()
+        outputPipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else { return }
+            stdoutCollector.append(chunk)
 
-        // Background collector for stdout
-        let outTask = Task.detached { () -> Data in
-            var collected = Data()
-            for try await line in outputPipe.fileHandleForReading.bytes.lines {
-                continuation.yield(line)
-                if let lineData = (line + "\n").data(using: .utf8) {
-                    collected.append(lineData)
+            if let onOutputLine = onOutputLine, let str = String(data: chunk, encoding: .utf8) {
+                let lines = str.components(separatedBy: .newlines)
+                for line in lines where !line.isEmpty {
+                    onOutputLine(line)
                 }
             }
-            return collected
         }
 
-        // Background collector for stderr
-        let errTask = Task.detached { () -> Data in
-            var collected = Data()
-            for try await line in errorPipe.fileHandleForReading.bytes.lines {
-                continuation.yield("[stderr] " + line)
-                if let lineData = (line + "\n").data(using: .utf8) {
-                    collected.append(lineData)
+        errorPipe.fileHandleForReading.readabilityHandler = { handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else { return }
+            stderrCollector.append(chunk)
+
+            if let onOutputLine = onOutputLine, let str = String(data: chunk, encoding: .utf8) {
+                let lines = str.components(separatedBy: .newlines)
+                for line in lines where !line.isEmpty {
+                    onOutputLine(line)
                 }
             }
-            return collected
         }
 
-        // Forward stream lines to onOutputLine if provided
-        let consumerTask = Task {
-            for await line in stream {
-                onOutputLine?(line)
+        // Cooperative asynchronous wait on process termination
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            process.terminationHandler = { _ in
+                continuation.resume()
+            }
+
+            do {
+                try process.run()
+            } catch {
+                continuation.resume(throwing: error)
             }
         }
 
-        do {
-            try process.run()
-        } catch {
-            continuation.finish()
-            throw error
+        // Clean up readability handlers
+        outputPipe.fileHandleForReading.readabilityHandler = nil
+        errorPipe.fileHandleForReading.readabilityHandler = nil
+
+        // Drain any remaining bytes
+        let remainingOut = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        if !remainingOut.isEmpty {
+            stdoutCollector.append(remainingOut)
         }
 
-        process.waitUntilExit()
+        let remainingErr = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        if !remainingErr.isEmpty {
+            stderrCollector.append(remainingErr)
+        }
 
-        outputData = (try? await outTask.value) ?? Data()
-        errorData = (try? await errTask.value) ?? Data()
-        continuation.finish()
-        _ = await consumerTask.value
-
-        let standardOutput = String(data: outputData, encoding: .utf8) ?? ""
-        let standardError = String(data: errorData, encoding: .utf8) ?? ""
+        let standardOutput = String(data: stdoutCollector.data, encoding: .utf8) ?? ""
+        let standardError = String(data: stderrCollector.data, encoding: .utf8) ?? ""
 
         return ProcessResult(
             exitCode: process.terminationStatus,
@@ -118,7 +120,7 @@ public actor ProcessRunner {
         )
     }
 
-    /// Convenience runner for launching common system binaries (e.g. /usr/bin/xcrun, /usr/bin/xcode-select).
+    /// Convenience overload using command path string.
     @discardableResult
     public func run(
         command: String,
@@ -127,23 +129,7 @@ public actor ProcessRunner {
         environment: [String: String]? = nil,
         onOutputLine: (@Sendable (String) -> Void)? = nil
     ) async throws -> ProcessResult {
-        let executableURL: URL
-        if command.hasPrefix("/") {
-            executableURL = URL(fileURLWithPath: command)
-        } else {
-            // Check common paths
-            let candidatePaths = [
-                "/usr/bin/" + command,
-                "/usr/local/bin/" + command,
-                "/opt/homebrew/bin/" + command
-            ]
-            if let found = candidatePaths.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
-                executableURL = URL(fileURLWithPath: found)
-            } else {
-                executableURL = URL(fileURLWithPath: "/usr/bin/" + command)
-            }
-        }
-
+        let executableURL = URL(fileURLWithPath: command)
         return try await run(
             executableURL: executableURL,
             arguments: arguments,
@@ -151,5 +137,23 @@ public actor ProcessRunner {
             environment: environment,
             onOutputLine: onOutputLine
         )
+    }
+}
+
+/// Thread-safe helper to collect data from readability handler blocks.
+private final class SafeDataCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var internalData = Data()
+
+    var data: Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return internalData
+    }
+
+    func append(_ chunk: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        internalData.append(chunk)
     }
 }
