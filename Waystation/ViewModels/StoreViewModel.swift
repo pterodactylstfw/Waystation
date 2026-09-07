@@ -5,7 +5,7 @@ import WebKit
 
 @Observable
 @MainActor
-final class StoreViewModel {
+final class StoreViewModel: Sendable {
     static let homeURL = URL(string: "https://chromewebstore.google.com")!
     private static let detailRegex = try? NSRegularExpression(pattern: "/detail/(?:([^/]+)/)?([a-z]{32})")
 
@@ -153,9 +153,9 @@ final class StoreViewModel {
         do {
             let crxURL = try await CRXDownloader.shared.downloadCRX(
                 extensionId: payload.extensionId
-            ) { [weak self] progress in
+            ) { [self] progress in
                 Task { @MainActor in
-                    self?.downloadProgress = progress
+                    self.downloadProgress = progress
                 }
             }
             logDrawerViewModel?.append(line: "[Store] CRX download completed: \(crxURL.path)")

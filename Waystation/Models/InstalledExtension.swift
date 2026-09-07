@@ -1,25 +1,25 @@
 import Foundation
 import SwiftUI
 
-/// Status representing the remaining validity of the 7-day personal team signing certificate.
-public enum CertificateExpirationStatus: String, Sendable, Codable {
-    case valid      // 3 to 7 days remaining (Green)
-    case warning    // <= 2 days remaining (Orange)
-    case expired    // 0 days or negative (Red)
-
-    public var badgeColor: Color {
-        switch self {
-        case .valid: return .green
-        case .warning: return .orange
-        case .expired: return .red
-        }
-    }
+/// Expiration badge status categories conforming to Story 3.2 acceptance criteria.
+public enum CertificateExpirationStatus: Sendable, Equatable {
+    case valid      // 3 - 7 days remaining (Green)
+    case warning    // 1 - 2 days remaining (Orange)
+    case expired    // <= 0 days remaining (Red)
 
     public var title: String {
         switch self {
         case .valid: return "Valid"
         case .warning: return "Expires Soon"
         case .expired: return "Expired"
+        }
+    }
+
+    public var badgeColor: Color {
+        switch self {
+        case .valid: return .green
+        case .warning: return .orange
+        case .expired: return .red
         }
     }
 }
@@ -57,24 +57,24 @@ public struct InstalledExtension: Identifiable, Codable, Sendable, Equatable {
     }
 
     /// URL to the container `.app` on disk.
-    public var containerAppURL: URL {
+    public nonisolated var containerAppURL: URL {
         URL(fileURLWithPath: containerAppPath)
     }
 
     /// Whether the `.app` bundle actually exists on disk.
-    public var existsOnDisk: Bool {
+    public nonisolated var existsOnDisk: Bool {
         FileManager.default.fileExists(atPath: containerAppPath)
     }
 
     /// Number of days remaining before the 7-day personal certificate expires.
-    public var daysRemaining: Int {
+    public nonisolated var daysRemaining: Int {
         let expirationDate = Calendar.current.date(byAdding: .day, value: 7, to: lastSignedDate) ?? lastSignedDate
         let components = Calendar.current.dateComponents([.day], from: Date(), to: expirationDate)
         return components.day ?? 0
     }
 
     /// Expiration status categorization (Green, Orange, Red).
-    public var expirationStatus: CertificateExpirationStatus {
+    public nonisolated var expirationStatus: CertificateExpirationStatus {
         let days = daysRemaining
         if days >= 3 {
             return .valid

@@ -1,17 +1,17 @@
 import SwiftUI
 
-/// Main view for Tab 3: Installed Extensions Library.
-/// Conforms to Story 3.1, Story 3.2, and Story 3.3 acceptance criteria.
-@MainActor
+/// Tab 3 View: Displays the persistent library of installed Safari Web Extensions.
+/// Conforms strictly to Story 3.1, Story 3.2, Story 3.3, and AD-1/HIG standards.
 public struct LibraryView: View {
-    @State private var viewModel: LibraryViewModel
-    public var onExploreStore: (() -> Void)?
+    @Bindable var viewModel: LibraryViewModel
+    var onExploreStore: (() -> Void)?
+    @State private var showPersistenceTip: Bool = true
 
     public init(
         viewModel: LibraryViewModel,
         onExploreStore: (() -> Void)? = nil
     ) {
-        self._viewModel = State(initialValue: viewModel)
+        self.viewModel = viewModel
         self.onExploreStore = onExploreStore
     }
 
@@ -21,6 +21,11 @@ public struct LibraryView: View {
             headerBar
 
             Divider()
+
+            if !viewModel.extensions.isEmpty && showPersistenceTip {
+                persistenceTipBanner
+                Divider()
+            }
 
             // Main Content Area
             if viewModel.isLoading && viewModel.extensions.isEmpty {
@@ -76,6 +81,31 @@ public struct LibraryView: View {
         }
     }
 
+    private var persistenceTipBanner: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "info.circle.fill")
+                .foregroundStyle(Color.accentColor)
+
+            Text("Tip: Safari keeps unsigned extensions active until you quit with ⌘Q. Close tabs with ⌘W to keep extensions running continuously.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+
+            Spacer()
+
+            Button {
+                showPersistenceTip = false
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .background(Color.accentColor.opacity(0.06))
+    }
+
     private var headerBar: some View {
         HStack(spacing: 12) {
             // Search Field
@@ -113,10 +143,19 @@ public struct LibraryView: View {
 
             Spacer()
 
-            // Extension count badge
-            Text("\(viewModel.extensions.count) extension\(viewModel.extensions.count == 1 ? "" : "s") installed")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            // Open Safari Action
+            Button {
+                Task {
+                    await SafariAutomationService.shared.launchSafariAndPrepare(
+                        autoToggleDevelopOption: AppSettings.shared.autoToggleSafariDevelopOption
+                    )
+                }
+            } label: {
+                Label("Open Safari", systemImage: "safari")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.regular)
+            .help("Launches Safari and registers installed extension containers")
 
             // Re-sign All button (Story 3.2)
             Button {
@@ -155,22 +194,20 @@ public struct LibraryView: View {
                     .font(.title3)
                     .fontWeight(.semibold)
 
-                Text("Browse the Chrome Web Store or drop an extension file to install it into Safari.")
-                    .font(.subheadline)
+                Text("Convert extensions via the Drop Zone or install directly from the Chrome Web Store.")
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: 380)
+                    .frame(maxWidth: 360)
             }
 
             if let onExploreStore = onExploreStore {
-                Button {
-                    onExploreStore()
-                } label: {
-                    Label("Explore Web Store", systemImage: "globe")
+                Button(action: onExploreStore) {
+                    Label("Explore Web Store", systemImage: "bag")
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.regular)
-                .padding(.top, 8)
+                .padding(.top, 4)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -194,5 +231,6 @@ public struct LibraryView: View {
             }
             .padding(16)
         }
+        .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
     }
 }

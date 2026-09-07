@@ -23,7 +23,7 @@ public actor SigningManager {
     /// Detects an available code signing identity on this Mac.
     /// Conforms to AD-6: Returns a Personal Team / Apple Development certificate if found,
     /// or falls back to ad-hoc signing ("-").
-    public func detectSigningIdentity(onOutputLine: ((String) -> Void)? = nil) async -> String {
+    public func detectSigningIdentity(onOutputLine: (@Sendable (String) -> Void)? = nil) async -> String {
         do {
             let result = try await processRunner.run(
                 command: "/usr/bin/security",
@@ -96,7 +96,7 @@ public actor SigningManager {
         let derivedDataBase = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Developer/Xcode/DerivedData")
         if let enumerator = FileManager.default.enumerator(at: derivedDataBase, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
-            for case let fileURL as URL in enumerator {
+            while let fileURL = enumerator.nextObject() as? URL {
                 if fileURL.pathExtension == "app" && fileURL.lastPathComponent == "\(ext.name).app" {
                     return fileURL
                 }
@@ -110,7 +110,7 @@ public actor SigningManager {
     public func sign(
         targetURL: URL,
         identity: String? = nil,
-        onOutputLine: ((String) -> Void)? = nil
+        onOutputLine: (@Sendable (String) -> Void)? = nil
     ) async throws {
         let resolvedIdentity = if let identity = identity {
             identity
@@ -149,7 +149,7 @@ public actor SigningManager {
     /// Resets each extension's `lastSignedDate` to `Date()` upon success.
     public func reSignAll(
         onProgress: (@Sendable (Int, Int, String) -> Void)? = nil,
-        onOutputLine: ((String) -> Void)? = nil
+        onOutputLine: (@Sendable (String) -> Void)? = nil
     ) async throws -> [InstalledExtension] {
         var extensions = try await registry.loadAll()
         guard !extensions.isEmpty else {

@@ -2,15 +2,15 @@ import Foundation
 
 /// Represents the output and termination status of a completed process.
 public struct ProcessResult: Sendable {
-    public let exitCode: Int32
-    public let standardOutput: String
-    public let standardError: String
+    public nonisolated let exitCode: Int32
+    public nonisolated let standardOutput: String
+    public nonisolated let standardError: String
 
-    public var isSuccess: Bool {
+    public nonisolated var isSuccess: Bool {
         exitCode == 0
     }
 
-    public init(exitCode: Int32, standardOutput: String, standardError: String) {
+    public nonisolated init(exitCode: Int32, standardOutput: String, standardError: String) {
         self.exitCode = exitCode
         self.standardOutput = standardOutput
         self.standardError = standardError
@@ -141,9 +141,9 @@ public actor ProcessRunner {
 }
 
 /// Thread-safe helper to collect data from readability handler blocks.
-private final class SafeDataCollector: @unchecked Sendable {
+private nonisolated final class SafeDataCollector: @unchecked Sendable {
     private let lock = NSLock()
-    private var internalData = Data()
+    nonisolated(unsafe) private var internalData = Data()
 
     var data: Data {
         lock.lock()
@@ -156,4 +156,6 @@ private final class SafeDataCollector: @unchecked Sendable {
         defer { lock.unlock() }
         internalData.append(chunk)
     }
+
+    init() {}
 }

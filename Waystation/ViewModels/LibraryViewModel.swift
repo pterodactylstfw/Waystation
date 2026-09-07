@@ -5,7 +5,7 @@ import Observation
 /// Conforms to AD-1, Story 3.1, Story 3.2, and Story 3.3 acceptance criteria.
 @Observable
 @MainActor
-public final class LibraryViewModel {
+public final class LibraryViewModel: Sendable {
     public var extensions: [InstalledExtension] = []
     public var searchText: String = ""
     public var isLoading: Bool = false
@@ -33,35 +33,28 @@ public final class LibraryViewModel {
         self.logDrawerViewModel = logDrawerViewModel
     }
 
-    /// Filtered list based on search text.
+    /// Filtered list of extensions based on search query.
     public var filteredExtensions: [InstalledExtension] {
-        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !trimmed.isEmpty else { return extensions }
-        return extensions.filter {
-            $0.name.lowercased().contains(trimmed) ||
-            $0.bundleIdentifier.lowercased().contains(trimmed) ||
-            $0.id.lowercased().contains(trimmed)
+        if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return extensions
+        }
+        return extensions.filter { ext in
+            ext.name.localizedCaseInsensitiveContains(searchText) ||
+            ext.bundleIdentifier.localizedCaseInsensitiveContains(searchText)
         }
     }
 
-    /// Count of extensions requiring re-signing soon (<= 2 days).
-    public var expiringSoonCount: Int {
-        extensions.filter { $0.expirationStatus != .valid }.count
-    }
-
-    /// Loads all installed extensions from disk (`registry.json`).
+    /// Loads all installed extensions from the registry and checks their physical presence on disk.
     public func loadExtensions() async {
         isLoading = true
         errorMessage = nil
-
         do {
             let loaded = try await registry.loadAll()
             self.extensions = loaded.sorted { $0.installedDate > $1.installedDate }
-            self.isLoading = false
         } catch {
-            self.errorMessage = "Eșec la încărcarea extensiilor: \(error.localizedDescription)"
-            self.isLoading = false
+            self.errorMessage = "Nu s-au putut încărca extensiile: \(error.localizedDescription)"
         }
+        isLoading = false
     }
 
     /// Re-signs all installed extensions in batch and resets their expiration countdowns to 7 days (Story 3.2).
@@ -75,12 +68,12 @@ public final class LibraryViewModel {
 
         do {
             let updated = try await signingManager.reSignAll(
-                onProgress: { [weak self] current, total, name in
+                onProgress: { [self] current, total, name in
                     Task { @MainActor in
-                        self?.resigningExtensionName = "\(name) (\(current)/\(total))"
+                        self.resigningExtensionName = "\(name) (\(current)/\(total))"
                     }
                 },
-                onOutputLine: { line in
+                onOutputLine: { [drawer] line in
                     Task { @MainActor in
                         drawer?.append(line: line)
                     }
@@ -116,28 +109,33 @@ public final class LibraryViewModel {
         self.showUninstallConfirmation = true
     }
 
-    /// Confirms and executes uninstallation (Story 3.3).
+    /// Executes permanent uninstallation of the selected extension (Story 3.3).
     public func confirmUninstall() async {
         guard let ext = extensionToUninstall else { return }
         showUninstallConfirmation = false
-        logDrawerViewModel?.append(line: "[Library] Uninstalling extension '\(ext.name)'...")
+        extensionToUninstall = nil
 
-        do {
-            // 1. Remove .app from disk if exists
-            if FileManager.default.fileExists(atPath: ext.containerAppPath) {
-                try FileManager.default.removeItem(atPath: ext.containerAppPath)
+        logDrawerViewModel?.append(line: "[Uninstall] Removing '\(ext.name)'...")
+
+        // 1. Delete .app bundle from disk
+        let appURL = ext.containerAppURL
+        if FileManager.default.fileExists(atPath: appURL.path) {
+            do {
+                try FileManager.default.removeItem(at: appURL)
+                logDrawerViewModel?.append(line: "[Uninstall] Deleted container bundle at '\(appURL.path)'.")
+            } catch {
+                logDrawerViewModel?.append(line: "[Uninstall] Warning: Could not delete bundle: \(error.localizedDescription)")
             }
+        }
 
-            // 2. Remove from registry.json
+        // 2. Remove entry from registry.json
+        do {
             try await registry.remove(id: ext.id)
-            logDrawerViewModel?.append(line: "[Library] Successfully removed '\(ext.name)' from registry.")
-
-            // 3. Refresh list
+            logDrawerViewModel?.append(line: "[Uninstall] Removed '\(ext.name)' from registry.")
             await loadExtensions()
-            self.extensionToUninstall = nil
         } catch {
-            logDrawerViewModel?.append(line: "[Library] Error uninstalling '\(ext.name)': \(error.localizedDescription)")
-            self.errorMessage = "Eșec la dezinstalare: \(error.localizedDescription)"
+            errorMessage = "Nu s-a putut șterge extensia din registru: \(error.localizedDescription)"
+            logDrawerViewModel?.append(line: "[Uninstall] Error: \(error.localizedDescription)")
         }
     }
 }

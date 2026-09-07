@@ -16,7 +16,7 @@ public struct ConverterService: Sendable {
     public func convert(
         package: IngestedPackage,
         bundleIdentifier: String? = nil,
-        onOutputLine: ((String) -> Void)? = nil
+        onOutputLine: (@Sendable (String) -> Void)? = nil
     ) async throws -> ConvertedProject {
         // 1. Prepare unique output directory inside ~/Library/Caches/org.waystation.app/converted/
         let cacheBaseURL = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first!
@@ -127,7 +127,7 @@ public struct ConverterService: Sendable {
     private func buildAndStageContainerApp(
         projectURL: URL,
         appName: String,
-        onOutputLine: ((String) -> Void)?
+        onOutputLine: (@Sendable (String) -> Void)?
     ) async throws -> URL? {
         onOutputLine?("[Build] Compiling container application for '\(appName)'...")
 
@@ -172,7 +172,7 @@ public struct ConverterService: Sendable {
 
         var foundAppURL: URL?
         if let enumerator = fileManager.enumerator(at: derivedDataBase, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
-            for case let fileURL as URL in enumerator {
+            while let fileURL = enumerator.nextObject() as? URL {
                 if fileURL.pathExtension == "app" && fileURL.lastPathComponent == "\(appName).app" {
                     foundAppURL = fileURL
                     break
@@ -206,7 +206,7 @@ public struct ConverterService: Sendable {
             return nil
         }
 
-        for case let fileURL as URL in enumerator {
+        while let fileURL = enumerator.nextObject() as? URL {
             if fileURL.pathExtension == "xcodeproj" {
                 return fileURL
             }

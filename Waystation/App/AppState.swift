@@ -40,8 +40,18 @@ public final class AppState {
     private let doctorService: DoctorService
 
     public init(
-        doctorService: DoctorService = .shared,
-        logDrawerViewModel: LogDrawerViewModel = .shared
+        doctorService: DoctorService = .shared
+    ) {
+        let drawer = LogDrawerViewModel.shared
+        self.doctorService = doctorService
+        self.logDrawerViewModel = drawer
+        self.dropZoneViewModel = DropZoneViewModel(logDrawerViewModel: drawer)
+        self.libraryViewModel = LibraryViewModel(logDrawerViewModel: drawer)
+    }
+
+    public init(
+        doctorService: DoctorService,
+        logDrawerViewModel: LogDrawerViewModel
     ) {
         self.doctorService = doctorService
         self.logDrawerViewModel = logDrawerViewModel
