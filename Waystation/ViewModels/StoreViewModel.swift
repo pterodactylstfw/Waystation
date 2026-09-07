@@ -24,6 +24,12 @@ final class StoreViewModel {
     var selectedExtension: StoreExtensionPayload?
     var showInstallConfirmation: Bool = false
 
+    // Download & pipeline state for Story 2.3
+    var isDownloading: Bool = false
+    var downloadProgress: Double = 0.0
+    var downloadErrorMessage: String?
+    var onTriggerPipeline: ((URL) async -> Void)?
+
     var logDrawerViewModel: LogDrawerViewModel?
 
     // Navigation triggers observed by StoreWebView
@@ -37,8 +43,9 @@ final class StoreViewModel {
         case stopLoading
     }
 
-    init(logDrawerViewModel: LogDrawerViewModel? = nil) {
+    init(logDrawerViewModel: LogDrawerViewModel? = nil, onTriggerPipeline: ((URL) async -> Void)? = nil) {
         self.logDrawerViewModel = logDrawerViewModel
+        self.onTriggerPipeline = onTriggerPipeline
         self.inputURLString = Self.homeURL.absoluteString
     }
 
@@ -96,8 +103,7 @@ final class StoreViewModel {
         }
         if let title = title, !title.isEmpty {
             self.pageTitle = title
-            // Refresh title if active detail was already detected
-            if let active = self.activeExtensionDetail, let url = url {
+            if let _ = self.activeExtensionDetail, let url = url {
                 checkForExtensionDetailPage(url: url)
             }
         }
@@ -134,5 +140,42 @@ final class StoreViewModel {
         self.selectedExtension = payload
         self.showInstallConfirmation = true
         logDrawerViewModel?.append(line: "[Store] 'Add to Safari' clicked for '\(payload.title)' (ID: \(payload.extensionId))")
+    }
+
+    /// Downloads the CRX binary and triggers the automated Safari conversion pipeline.
+    func startDownloadAndPipeline(payload: StoreExtensionPayload) async {
+        isDownloading = true
+        downloadProgress = 0.0
+        downloadErrorMessage = nil
+        logDrawerViewModel?.isStreaming = true
+        logDrawerViewModel?.append(line: "[Store] Starting automated CRX download for '\(payload.title)' (ID: \(payload.extensionId))...")
+
+        do {
+            let crxURL = try await CRXDownloader.shared.downloadCRX(
+                extensionId: payload.extensionId
+            ) { [weak self] progress in
+                Task { @MainActor in
+                    self?.downloadProgress = progress
+                }
+            }
+            logDrawerViewModel?.append(line: "[Store] CRX download completed: \(crxURL.path)")
+            isDownloading = false
+            showInstallConfirmation = false
+            let destinationURL = crxURL
+            selectedExtension = nil
+
+            // Hand off to the conversion pipeline
+            if let onTriggerPipeline = onTriggerPipeline {
+                await onTriggerPipeline(destinationURL)
+            }
+        } catch let error as WaystationError {
+            logDrawerViewModel?.append(line: "[Store] Error downloading CRX: \(error.localizedDescription)")
+            downloadErrorMessage = error.errorDescription
+            isDownloading = false
+        } catch {
+            logDrawerViewModel?.append(line: "[Store] Error: \(error.localizedDescription)")
+            downloadErrorMessage = error.localizedDescription
+            isDownloading = false
+        }
     }
 }

@@ -28,6 +28,7 @@ public final class AppState {
     public var copiedCommandToast: Bool = false
 
     public var logDrawerViewModel: LogDrawerViewModel
+    public var dropZoneViewModel: DropZoneViewModel
 
     /// Whether the warning banner should appear (if Command Line Tools are missing)
     public var showDoctorWarning: Bool {
@@ -43,6 +44,7 @@ public final class AppState {
     ) {
         self.doctorService = doctorService
         self.logDrawerViewModel = logDrawerViewModel
+        self.dropZoneViewModel = DropZoneViewModel(logDrawerViewModel: logDrawerViewModel)
     }
 
     /// Verifies system developer prerequisites.
@@ -61,10 +63,19 @@ public final class AppState {
             copiedCommandToast = true
         }
         Task {
-            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
             withAnimation {
                 self.copiedCommandToast = false
             }
+        }
+    }
+
+    /// Ingests a downloaded package from Store and automatically launches the conversion pipeline.
+    public func triggerConversionPipeline(for sourceURL: URL) async {
+        selectedTab = .dropZone
+        await dropZoneViewModel.handleDroppedURLs([sourceURL])
+        if dropZoneViewModel.ingestedPackage != nil && !dropZoneViewModel.showIncompatibilitySheet {
+            await dropZoneViewModel.convertCurrentPackage()
         }
     }
 }

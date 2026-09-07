@@ -11,13 +11,18 @@ public struct MainView: View {
             DoctorBannerView(appState: appState)
 
             TabView(selection: $appState.selectedTab) {
-                StoreView(logDrawerViewModel: appState.logDrawerViewModel)
-                    .tabItem {
-                        Label(AppTab.store.rawValue, systemImage: AppTab.store.iconName)
+                StoreView(
+                    logDrawerViewModel: appState.logDrawerViewModel,
+                    onTriggerPipeline: { crxURL in
+                        await appState.triggerConversionPipeline(for: crxURL)
                     }
-                    .tag(AppTab.store)
+                )
+                .tabItem {
+                    Label(AppTab.store.rawValue, systemImage: AppTab.store.iconName)
+                }
+                .tag(AppTab.store)
 
-                DropZoneView(viewModel: DropZoneViewModel(logDrawerViewModel: appState.logDrawerViewModel))
+                DropZoneView(viewModel: appState.dropZoneViewModel)
                     .tabItem {
                         Label(AppTab.dropZone.rawValue, systemImage: AppTab.dropZone.iconName)
                     }

@@ -17,21 +17,32 @@ enum WebStoreScript {
         }
 
         function getExtensionTitle() {
-            const h1 = document.querySelector('h1');
-            if (h1 && h1.textContent.trim()) {
-                return h1.textContent.trim();
-            }
-            // Fallback: extract from URL slug /detail/<slug>/<id>
+            // Priority 1: Extract URL slug /detail/<slug>/<id>
             const parts = window.location.pathname.split('/');
             const detailIdx = parts.indexOf('detail');
+            let fallbackSlug = null;
             if (detailIdx !== -1 && parts[detailIdx + 1] && parts[detailIdx + 1].length > 0 && parts[detailIdx + 1].length !== 32) {
-                const slug = parts[detailIdx + 1];
-                return slug.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+                fallbackSlug = parts[detailIdx + 1].split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
             }
+
+            // Priority 2: Check h1 if not generic
+            const h1 = document.querySelector('h1');
+            if (h1 && h1.textContent.trim()) {
+                const text = h1.textContent.trim();
+                if (!text.toLowerCase().includes('welcome') && !text.toLowerCase().includes('chrome web store')) {
+                    return text;
+                }
+            }
+
+            if (fallbackSlug) {
+                return fallbackSlug;
+            }
+
             const titleParts = document.title.split(' - Chrome Web Store');
-            if (titleParts[0].trim() && !titleParts[0].includes('Welcome to')) {
+            if (titleParts[0].trim() && !titleParts[0].toLowerCase().includes('welcome') && !titleParts[0].toLowerCase().includes('chrome web store')) {
                 return titleParts[0].trim();
             }
+
             return 'Chrome Extension';
         }
 
