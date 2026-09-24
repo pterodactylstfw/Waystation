@@ -1,12 +1,14 @@
 import SwiftUI
 
 /// Card view representing a single installed Safari extension in the Library.
-/// Conforms to Story 3.1, Story 3.2, and Story 3.3.
+/// Conforms to Story 3.1, Story 3.2, Story 3.3, and macOS 26/27 Liquid Glass design principles.
 public struct ExtensionRowView: View {
     public let ext: InstalledExtension
     public let signatureStatus: SignatureVerificationResult?
     public let onReveal: () -> Void
     public let onUninstall: () -> Void
+
+    @State private var isHovered: Bool = false
 
     public init(
         ext: InstalledExtension,
@@ -29,21 +31,29 @@ public struct ExtensionRowView: View {
 
     public var body: some View {
         HStack(spacing: 16) {
-            // Extension Icon
+            // Extension Icon Container with Liquid Glass Sheen
             ZStack {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
                     .fill(
                         LinearGradient(
-                            colors: [Color.blue.opacity(0.15), Color.purple.opacity(0.1)],
+                            colors: [Color.blue.opacity(0.2), Color.purple.opacity(0.12)],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
                     )
                     .frame(width: 52, height: 52)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .stroke(Color.secondary.opacity(0.15), lineWidth: 1)
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(
+                                LinearGradient(
+                                    colors: [Color.white.opacity(0.3), Color.white.opacity(0.05)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                ),
+                                lineWidth: 1
+                            )
                     )
+                    .shadow(color: Color.blue.opacity(0.15), radius: 6, x: 0, y: 2)
 
                 if let data = ext.iconData, let nsImage = NSImage(data: data) {
                     Image(nsImage: nsImage)
@@ -86,10 +96,11 @@ public struct ExtensionRowView: View {
 
                     if ext.expirationStatus == .expired {
                         // Expired state: Clear and unified indication
-                        HStack(spacing: 4) {
+                        HStack(spacing: 5) {
                             Circle()
                                 .fill(Color.red)
-                                .frame(width: 7, height: 7)
+                                .frame(width: 6, height: 6)
+                                .shadow(color: Color.red.opacity(0.5), radius: 2)
 
                             Text("Certificate Expired")
                                 .font(.system(size: 11, weight: .medium))
@@ -100,9 +111,9 @@ public struct ExtensionRowView: View {
                         .background(Color.red.opacity(0.12))
                         .clipShape(Capsule())
 
-                        HStack(spacing: 4) {
+                        HStack(spacing: 5) {
                             Image(systemName: "arrow.triangle.2.circlepath")
-                                .font(.system(size: 10))
+                                .font(.system(size: 9))
                                 .foregroundStyle(Color.orange)
 
                             Text("Re-sign Required")
@@ -116,10 +127,11 @@ public struct ExtensionRowView: View {
                         .help("The 7-day Apple developer certificate has expired. Click 'Re-sign All' to refresh it.")
                     } else {
                         // Active state: Days remaining
-                        HStack(spacing: 4) {
+                        HStack(spacing: 5) {
                             Circle()
                                 .fill(ext.expirationStatus.badgeColor)
-                                .frame(width: 7, height: 7)
+                                .frame(width: 6, height: 6)
+                                .shadow(color: ext.expirationStatus.badgeColor.opacity(0.5), radius: 2)
 
                             Text(badgeText)
                                 .font(.system(size: 11, weight: .medium))
@@ -132,7 +144,7 @@ public struct ExtensionRowView: View {
 
                         // Live signature integrity badge
                         if let sig = signatureStatus {
-                            HStack(spacing: 4) {
+                            HStack(spacing: 5) {
                                 Image(systemName: sig.isValidOnDisk ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
                                     .font(.system(size: 10))
                                     .foregroundStyle(sig.isValidOnDisk ? Color.green : Color.red)
@@ -178,12 +190,12 @@ public struct ExtensionRowView: View {
             }
         }
         .padding(16)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.6))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color(nsColor: .separatorColor).opacity(0.4), lineWidth: 1)
-        )
+        .liquidGlass(cornerRadius: 16, intensity: isHovered ? .prominent : .standard)
+        .scaleEffect(isHovered ? 1.003 : 1.0)
+        .animation(.spring(response: 0.25, dampingFraction: 0.7), value: isHovered)
+        .onHover { hovering in
+            isHovered = hovering
+        }
     }
 
     private var badgeText: String {

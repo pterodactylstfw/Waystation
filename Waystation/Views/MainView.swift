@@ -1,46 +1,51 @@
 import SwiftUI
 
 /// Main container view coordinating the 3-tab layout, Doctor environment banner, and live log drawer.
+/// Styled with macOS 26/27 Liquid Glass translucent ambient materials.
 public struct MainView: View {
     @State private var appState = AppState()
 
     public init() {}
 
     public var body: some View {
-        VStack(spacing: 0) {
-            DoctorBannerView(appState: appState)
+        ZStack {
+            LiquidAmbientBackground()
 
-            TabView(selection: $appState.selectedTab) {
-                StoreView(
-                    logDrawerViewModel: appState.logDrawerViewModel,
-                    onTriggerPipeline: { crxURL in
-                        await appState.triggerConversionPipeline(for: crxURL)
-                    }
-                )
-                .tabItem {
-                    Label(AppTab.store.rawValue, systemImage: AppTab.store.iconName)
-                }
-                .tag(AppTab.store)
+            VStack(spacing: 0) {
+                DoctorBannerView(appState: appState)
 
-                DropZoneView(viewModel: appState.dropZoneViewModel)
+                TabView(selection: $appState.selectedTab) {
+                    StoreView(
+                        logDrawerViewModel: appState.logDrawerViewModel,
+                        onTriggerPipeline: { crxURL in
+                            await appState.triggerConversionPipeline(for: crxURL)
+                        }
+                    )
                     .tabItem {
-                        Label(AppTab.dropZone.rawValue, systemImage: AppTab.dropZone.iconName)
+                        Label(AppTab.store.rawValue, systemImage: AppTab.store.iconName)
                     }
-                    .tag(AppTab.dropZone)
+                    .tag(AppTab.store)
 
-                LibraryView(
-                    viewModel: appState.libraryViewModel,
-                    onExploreStore: {
-                        appState.selectedTab = .store
+                    DropZoneView(viewModel: appState.dropZoneViewModel)
+                        .tabItem {
+                            Label(AppTab.dropZone.rawValue, systemImage: AppTab.dropZone.iconName)
+                        }
+                        .tag(AppTab.dropZone)
+
+                    LibraryView(
+                        viewModel: appState.libraryViewModel,
+                        onExploreStore: {
+                            appState.selectedTab = .store
+                        }
+                    )
+                    .tabItem {
+                        Label(AppTab.library.rawValue, systemImage: AppTab.library.iconName)
                     }
-                )
-                .tabItem {
-                    Label(AppTab.library.rawValue, systemImage: AppTab.library.iconName)
+                    .tag(AppTab.library)
                 }
-                .tag(AppTab.library)
-            }
 
-            LogDrawerView(viewModel: appState.logDrawerViewModel)
+                LogDrawerView(viewModel: appState.logDrawerViewModel)
+            }
         }
         .frame(minWidth: 900, minHeight: 620)
         .toolbar {

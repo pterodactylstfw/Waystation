@@ -1,60 +1,55 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Custom GeometryEffect for horizontal shake animation on drop error.
+/// Geometry effect producing a horizontal spring shake animation for invalid inputs.
 struct ShakeEffect: GeometryEffect {
-    var amount: CGFloat = 8
-    var shakesPerUnit = 4
     var animatableData: CGFloat
 
     func effectValue(size: CGSize) -> ProjectionTransform {
-        let translation = amount * sin(animatableData * .pi * CGFloat(shakesPerUnit))
-        return ProjectionTransform(CGAffineTransform(translationX: translation, y: 0))
+        ProjectionTransform(CGAffineTransform(translationX: 10 * sin(animatableData * .pi * 3), y: 0))
     }
 }
 
-/// Interactive drop zone view for unpacked extension folders, .zip, and .crx packages.
-/// Conforms to Story 1.2, Story 1.3, and Story 1.5 acceptance criteria.
-@MainActor
+/// Tab 2 View: Interactive drag-and-drop ingestion zone with Liquid Glass portal aesthetics (macOS 26/27).
 public struct DropZoneView: View {
-    @State private var viewModel: DropZoneViewModel
+    @Bindable var viewModel: DropZoneViewModel
     @State private var shakeAnimValue: CGFloat = 0
 
     public init(viewModel: DropZoneViewModel) {
-        self._viewModel = State(initialValue: viewModel)
-    }
-
-    public init() {
-        self._viewModel = State(initialValue: DropZoneViewModel())
+        self.viewModel = viewModel
     }
 
     public var body: some View {
-        VStack(spacing: 24) {
-            if let project = viewModel.convertedProject {
-                convertedProjectCard(project)
-            } else if let package = viewModel.ingestedPackage {
-                packageDetailsCard(package)
-            } else {
-                dropTargetBox
-            }
+        ZStack {
+            LiquidAmbientBackground()
 
-            if let error = viewModel.errorMessage {
-                HStack(spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
-                    Text(error)
-                        .font(.callout)
-                        .foregroundStyle(.red)
+            VStack(spacing: 24) {
+                if let converted = viewModel.convertedProject {
+                    convertedProjectCard(converted)
+                } else if let package = viewModel.ingestedPackage {
+                    packageDetailsCard(package)
+                } else {
+                    dropTargetBox
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(Color.red.opacity(0.1))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .modifier(ShakeEffect(animatableData: shakeAnimValue))
+
+                // Inline Error Banner with Shake Animation
+                if let error = viewModel.errorMessage {
+                    HStack(spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundStyle(.red)
+                        Text(error)
+                            .font(.callout)
+                            .foregroundStyle(.red)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .liquidGlass(cornerRadius: 12, intensity: .subtle, tintColor: .red)
+                    .modifier(ShakeEffect(animatableData: shakeAnimValue))
+                }
             }
+            .padding(32)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .padding(32)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onChange(of: viewModel.shakeTrigger) { _, _ in
             shakeAnimValue = 0
             withAnimation(.spring(response: 0.3, dampingFraction: 0.25, blendDuration: 0)) {
@@ -87,23 +82,56 @@ public struct DropZoneView: View {
     }
 
     private var dropTargetBox: some View {
-        VStack(spacing: 16) {
+        VStack(spacing: 20) {
+            // Concentric Glowing Glass Rings
             ZStack {
                 Circle()
-                    .fill(viewModel.isTargeted ? Color.accentColor.opacity(0.15) : Color.secondary.opacity(0.1))
-                    .frame(width: 80, height: 80)
+                    .fill(
+                        RadialGradient(
+                            colors: [
+                                (viewModel.isTargeted ? Color.accentColor : Color.blue).opacity(0.18),
+                                Color.clear
+                            ],
+                            center: .center,
+                            startRadius: 0,
+                            endRadius: 55
+                        )
+                    )
+                    .frame(width: 100, height: 100)
+                    .blur(radius: 6)
 
-                Image(systemName: viewModel.isProcessing ? "gearshape.arrow.triangle.2.circlepath" : "arrow.down.doc.fill")
-                    .font(.system(size: 36))
-                    .foregroundStyle(viewModel.isTargeted ? Color.accentColor : Color.secondary)
+                Circle()
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [
+                                Color.white.opacity(viewModel.isTargeted ? 0.4 : 0.2),
+                                Color.white.opacity(0.05)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1.5
+                    )
+                    .frame(width: 84, height: 84)
+
+                Image(systemName: viewModel.isProcessing ? "gearshape.arrow.triangle.2.circlepath" : (viewModel.isTargeted ? "arrow.down.circle.fill" : "arrow.down.doc.fill"))
+                    .font(.system(size: 38))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: viewModel.isTargeted ? [Color.blue, Color.purple] : [Color.accentColor, Color.blue],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
                     .rotationEffect(viewModel.isProcessing ? .degrees(360) : .zero)
                     .animation(viewModel.isProcessing ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: viewModel.isProcessing)
+                    .scaleEffect(viewModel.isTargeted ? 1.08 : 1.0)
             }
 
             VStack(spacing: 6) {
                 Text(viewModel.isProcessing ? "Ingesting Package..." : "Drag & Drop Chrome Extension Here")
                     .font(.title2)
-                    .fontWeight(.semibold)
+                    .fontWeight(.bold)
 
                 Text("Accepts unpacked extension folders, .zip archives, and .crx packages")
                     .font(.subheadline)
@@ -118,19 +146,25 @@ public struct DropZoneView: View {
             .buttonStyle(.bordered)
             .controlSize(.regular)
             .disabled(viewModel.isProcessing)
+
+            // Supported format chips
+            HStack(spacing: 8) {
+                formatChip(".crx")
+                formatChip(".zip")
+                formatChip("folder")
+                formatChip("manifest.json")
+            }
+            .padding(.top, 4)
         }
-        .frame(maxWidth: 580, maxHeight: 340)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+        .frame(maxWidth: 580, minHeight: 330)
+        .padding(36)
+        .liquidGlass(
+            cornerRadius: 24,
+            intensity: viewModel.isTargeted ? .prominent : .standard,
+            tintColor: viewModel.isTargeted ? Color.accentColor : nil
         )
-        .overlay(
-            RoundedRectangle(cornerRadius: 16)
-                .strokeBorder(
-                    viewModel.isTargeted ? Color.accentColor : Color.secondary.opacity(0.3),
-                    style: StrokeStyle(lineWidth: viewModel.isTargeted ? 3 : 2, dash: [8])
-                )
-        )
+        .scaleEffect(viewModel.isTargeted ? 1.015 : 1.0)
+        .animation(.spring(response: 0.3, dampingFraction: 0.7), value: viewModel.isTargeted)
         .modifier(ShakeEffect(animatableData: shakeAnimValue))
         .dropDestination(for: URL.self) { items, _ in
             Task {
@@ -144,30 +178,46 @@ public struct DropZoneView: View {
         }
     }
 
+    private func formatChip(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Color.secondary.opacity(0.08))
+            .clipShape(Capsule())
+    }
+
     private func packageDetailsCard(_ package: IngestedPackage) -> some View {
         VStack(spacing: 20) {
-            Image(systemName: "puzzlepiece.extension.fill")
-                .font(.system(size: 48))
-                .foregroundStyle(Color.accentColor)
+            ZStack {
+                Circle()
+                    .fill(Color.accentColor.opacity(0.15))
+                    .frame(width: 68, height: 68)
 
-            VStack(spacing: 4) {
+                Image(systemName: "puzzlepiece.extension.fill")
+                    .font(.system(size: 36))
+                    .foregroundStyle(Color.accentColor)
+            }
+
+            VStack(spacing: 6) {
                 Text(package.name)
-                    .font(.title)
+                    .font(.title2)
                     .fontWeight(.bold)
 
                 HStack(spacing: 8) {
                     Text("Version \(package.version)")
-                        .font(.subheadline)
+                        .font(.caption)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
-                        .background(Color.secondary.opacity(0.15))
+                        .background(Color.secondary.opacity(0.12))
                         .clipShape(Capsule())
 
                     Text("Manifest v\(package.metadata.manifestVersion)")
-                        .font(.subheadline)
+                        .font(.caption)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
-                        .background(Color.secondary.opacity(0.15))
+                        .background(Color.secondary.opacity(0.12))
                         .clipShape(Capsule())
                 }
             }
@@ -183,7 +233,7 @@ public struct DropZoneView: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
                 .background(Color.orange.opacity(0.12))
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
 
             VStack(alignment: .leading, spacing: 6) {
@@ -195,10 +245,10 @@ public struct DropZoneView: View {
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
-                    .padding(8)
+                    .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(nsColor: .textBackgroundColor).opacity(0.6))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .frame(maxWidth: 480)
 
@@ -234,11 +284,7 @@ public struct DropZoneView: View {
         }
         .padding(32)
         .frame(maxWidth: 580)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color(nsColor: .controlBackgroundColor))
-                .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
-        )
+        .liquidGlass(cornerRadius: 20, intensity: .standard)
     }
 
     private func convertedProjectCard(_ project: ConvertedProject) -> some View {
@@ -246,16 +292,16 @@ public struct DropZoneView: View {
             ZStack {
                 Circle()
                     .fill(Color.green.opacity(0.15))
-                    .frame(width: 72, height: 72)
+                    .frame(width: 68, height: 68)
 
                 Image(systemName: "checkmark.seal.fill")
-                    .font(.system(size: 40))
+                    .font(.system(size: 38))
                     .foregroundStyle(.green)
             }
 
-            VStack(spacing: 4) {
+            VStack(spacing: 6) {
                 Text("Xcode Project Ready")
-                    .font(.title)
+                    .font(.title2)
                     .fontWeight(.bold)
 
                 Text(project.appName)
@@ -264,9 +310,10 @@ public struct DropZoneView: View {
 
                 Text(project.bundleIdentifier)
                     .font(.caption)
+                    .fontDesign(.monospaced)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 3)
-                    .background(Color.secondary.opacity(0.15))
+                    .background(Color.secondary.opacity(0.12))
                     .clipShape(Capsule())
             }
 
@@ -279,10 +326,10 @@ public struct DropZoneView: View {
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
-                    .padding(8)
+                    .padding(10)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(nsColor: .textBackgroundColor).opacity(0.6))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .background(Color(nsColor: .textBackgroundColor).opacity(0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             }
             .frame(maxWidth: 480)
 
@@ -300,26 +347,11 @@ public struct DropZoneView: View {
                     Label("Reveal in Finder", systemImage: "folder")
                 }
                 .buttonStyle(.bordered)
-
-                Button {
-                    // Ready for Story 2/3 Build & Install
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "hammer.fill")
-                        Text("Ready to Build")
-                    }
-                    .fontWeight(.semibold)
-                }
-                .buttonStyle(.borderedProminent)
             }
         }
         .padding(32)
         .frame(maxWidth: 580)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color(nsColor: .controlBackgroundColor))
-                .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 4)
-        )
+        .liquidGlass(cornerRadius: 20, intensity: .standard)
     }
 
     private func selectFileWithOpenPanel() {
@@ -328,6 +360,7 @@ public struct DropZoneView: View {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.folder, .zip, UTType(filenameExtension: "crx") ?? .data]
+
         panel.begin { response in
             if response == .OK, let selectedURL = panel.url {
                 Task {

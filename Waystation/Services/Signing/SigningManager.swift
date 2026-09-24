@@ -7,7 +7,7 @@ public struct SignatureVerificationResult: Sendable, Equatable {
     public let authority: String?
     public let statusMessage: String
 
-    public init(isValidOnDisk: Bool, isAdHoc: Bool, authority: String?, statusMessage: String) {
+    nonisolated public init(isValidOnDisk: Bool, isAdHoc: Bool, authority: String? = nil, statusMessage: String) {
         self.isValidOnDisk = isValidOnDisk
         self.isAdHoc = isAdHoc
         self.authority = authority
@@ -51,140 +51,102 @@ public actor SigningManager {
                 return "-"
             }
 
-            let output = result.standardOutput
-            var identities: [(sha: String, name: String)] = []
-
-            if let regex = Self.identityRegex {
-                let nsOutput = output as NSString
-                let matches = regex.matches(in: output, range: NSRange(location: 0, length: nsOutput.length))
-                for match in matches {
-                    if match.numberOfRanges >= 3 {
-                        let sha = nsOutput.substring(with: match.range(at: 1))
-                        let name = nsOutput.substring(with: match.range(at: 2))
-                        identities.append((sha, name))
+            let lines = result.standardOutput.components(separatedBy: .newlines)
+            for line in lines {
+                let range = NSRange(location: 0, length: line.utf16.count)
+                if let match = Self.identityRegex?.firstMatch(in: line, options: [], range: range) {
+                    if let certRange = Range(match.range(at: 2), in: line) {
+                        let certName = String(line[certRange])
+                        if certName.contains("Apple Development") || certName.contains("Developer ID Application") {
+                            onOutputLine?("[Signing] Detected signing identity: \(certName)")
+                            return certName
+                        }
                     }
                 }
             }
 
-            // Prioritize Apple Development certificates
-            if let dev = identities.first(where: { $0.name.contains("Apple Development") }) {
-                onOutputLine?("[Signing] Selected signing identity: \(dev.name)")
-                return dev.sha
-            }
-
-            // Fallback to any valid identity
-            if let first = identities.first {
-                onOutputLine?("[Signing] Selected signing identity: \(first.name)")
-                return first.sha
-            }
-
-            onOutputLine?("[Signing] No Apple Developer identity detected. Using ad-hoc signing ('-').")
+            onOutputLine?("[Signing] No Apple Development identity discovered. Falling back to ad-hoc ('-').")
             return "-"
         } catch {
-            onOutputLine?("[Signing] Error checking identities: \(error.localizedDescription). Using ad-hoc signing.")
+            onOutputLine?("[Signing] Security command execution failed: \(error.localizedDescription). Falling back to ad-hoc ('-').")
             return "-"
         }
     }
 
-    /// Resolves the actual executable `.app` bundle for an extension.
-    public func resolveAppBundle(for ext: InstalledExtension) -> URL? {
-        let path = ext.containerAppPath
-        let url = URL(fileURLWithPath: path)
-
-        // 1. Direct .app check
-        if url.pathExtension == "app" && FileManager.default.fileExists(atPath: url.path) {
-            return url
-        }
-
-        // 2. Check ~/Library/Application Support/Waystation/Extensions/<Name>.app
-        let baseAppSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let appSupportTarget = baseAppSupport
-            .appendingPathComponent("Waystation", isDirectory: true)
-            .appendingPathComponent("Extensions", isDirectory: true)
-            .appendingPathComponent("\(ext.name).app")
-
-        if FileManager.default.fileExists(atPath: appSupportTarget.path) {
-            return appSupportTarget
-        }
-
-        // 3. Look in DerivedData
-        let derivedDataBase = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Developer/Xcode/DerivedData")
-        if let enumerator = FileManager.default.enumerator(at: derivedDataBase, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
-            while let fileURL = enumerator.nextObject() as? URL {
-                if fileURL.pathExtension == "app" && fileURL.lastPathComponent == "\(ext.name).app" {
-                    return fileURL
-                }
-            }
-        }
-
-        return nil
-    }
-
-    /// Verifies the code signature integrity and authority of an installed container app bundle.
+    /// Verifies the code signature integrity of an installed container app or appex bundle.
+    /// Returns detailed verification status including ad-hoc identification and certificate authority.
     public func verifySignature(for targetURL: URL) async -> SignatureVerificationResult {
         guard FileManager.default.fileExists(atPath: targetURL.path) else {
             return SignatureVerificationResult(
                 isValidOnDisk: false,
                 isAdHoc: false,
                 authority: nil,
-                statusMessage: "Container bundle not found on disk"
+                statusMessage: "Container app not found at path"
             )
         }
 
-        // 1. Check validity with codesign --verify --verbose=2
-        let verifyResult = try? await processRunner.run(
-            command: "/usr/bin/codesign",
-            arguments: ["--verify", "--verbose=2", targetURL.path],
-            onOutputLine: nil
-        )
+        do {
+            let result = try await processRunner.run(
+                command: "/usr/bin/codesign",
+                arguments: ["--verify", "--verbose=4", targetURL.path],
+                onOutputLine: nil
+            )
 
-        let isValid = verifyResult?.isSuccess ?? false
+            let combinedOutput = result.standardOutput + "\n" + result.standardError
 
-        // 2. Inspect signature details with codesign -dvvv
-        let infoResult = try? await processRunner.run(
-            command: "/usr/bin/codesign",
-            arguments: ["-dvvv", targetURL.path],
-            onOutputLine: nil
-        )
+            if result.isSuccess {
+                // Now inspect signature details
+                let detailResult = try await processRunner.run(
+                    command: "/usr/bin/codesign",
+                    arguments: ["-dvvv", targetURL.path],
+                    onOutputLine: nil
+                )
+                let detailOutput = detailResult.standardOutput + "\n" + detailResult.standardError
 
-        let output = (infoResult?.standardError ?? "") + "\n" + (infoResult?.standardOutput ?? "")
-        let isAdHoc = output.contains("Signature=adhoc")
+                var authority: String?
+                var isAdHoc = false
 
-        var authority: String?
-        for line in output.components(separatedBy: .newlines) {
-            if line.hasPrefix("Authority=Apple Development:") {
-                authority = line.replacingOccurrences(of: "Authority=", with: "")
-                break
-            } else if authority == nil && line.hasPrefix("Authority=") {
-                authority = line.replacingOccurrences(of: "Authority=", with: "")
-            }
-        }
+                if detailOutput.contains("Signature=adhoc") {
+                    isAdHoc = true
+                }
 
-        let message: String
-        if isValid {
-            if isAdHoc {
-                message = "Valid (Ad-hoc signature)"
-            } else if let auth = authority {
-                message = "Valid (\(auth))"
+                // Parse Authority
+                for line in detailOutput.components(separatedBy: .newlines) {
+                    if line.hasPrefix("Authority=") {
+                        let auth = line.replacingOccurrences(of: "Authority=", with: "").trimmingCharacters(in: .whitespaces)
+                        if authority == nil {
+                            authority = auth
+                        }
+                    }
+                }
+
+                return SignatureVerificationResult(
+                    isValidOnDisk: true,
+                    isAdHoc: isAdHoc,
+                    authority: authority,
+                    statusMessage: isAdHoc ? "Signed (Ad-hoc)" : "Signed (\(authority ?? "Verified"))"
+                )
             } else {
-                message = "Signature verified and valid"
+                let errorMsg = combinedOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+                return SignatureVerificationResult(
+                    isValidOnDisk: false,
+                    isAdHoc: false,
+                    authority: nil,
+                    statusMessage: errorMsg.isEmpty ? "Invalid or expired signature" : errorMsg
+                )
             }
-        } else {
-            let errorDetail = verifyResult?.standardError.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            message = errorDetail.isEmpty ? "Signature invalid or modified" : errorDetail
+        } catch {
+            return SignatureVerificationResult(
+                isValidOnDisk: false,
+                isAdHoc: false,
+                authority: nil,
+                statusMessage: "Codesign inspection error: \(error.localizedDescription)"
+            )
         }
-
-        return SignatureVerificationResult(
-            isValidOnDisk: isValid,
-            isAdHoc: isAdHoc,
-            authority: authority,
-            statusMessage: message
-        )
     }
 
-    /// Signs a container app bundle using the specified identity (or auto-detected).
-    /// Follows Apple's inside-out signing order: nested .appex bundles first, then container .app.
+    /// Recursively signs an application bundle with the given identity.
+    /// Conforms to AD-6: signs embedded .appex bundles first, followed by the main container .app.
     public func sign(
         targetURL: URL,
         identity: String? = nil,
@@ -252,20 +214,15 @@ public actor SigningManager {
     ) async throws -> [InstalledExtension] {
         var extensions = try await registry.loadAll()
         guard !extensions.isEmpty else {
-            onOutputLine?("[Signing] No extensions registered to re-sign.")
+            onOutputLine?("[Signing] No installed extensions to re-sign.")
             return []
         }
 
-        let total = extensions.count
-        onOutputLine?("[Signing] Initiating batch re-signing for \(total) extension\(total == 1 ? "" : "s")...")
-
+        onOutputLine?("[Signing] Resolving code signing identity for \(extensions.count) extension(s)...")
         let identity = await detectSigningIdentity(onOutputLine: onOutputLine)
 
         for (index, ext) in extensions.enumerated() {
-            let currentNum = index + 1
-            onProgress?(currentNum, total, ext.name)
-            onOutputLine?("[Signing] [\(currentNum)/\(total)] Re-signing '\(ext.name)'...")
-
+            onProgress?(index + 1, extensions.count, ext.name)
             var updated = ext
 
             if let resolvedApp = resolveAppBundle(for: ext) {
@@ -289,5 +246,37 @@ public actor SigningManager {
 
         onOutputLine?("[Signing] Batch re-signing complete! All expiration countdowns reset to 7 days.")
         return extensions
+    }
+
+    /// Attempts to locate the compiled `.app` container within standard DerivedData or the project build directory.
+    private func resolveAppBundle(for ext: InstalledExtension) -> URL? {
+        let directURL = ext.containerAppURL
+        if directURL.pathExtension == "app" && FileManager.default.fileExists(atPath: directURL.path) {
+            return directURL
+        }
+
+        // If stored path is an .xcodeproj or directory, scan Products in DerivedData
+        let appName = ext.name.replacingOccurrences(of: " ", with: "")
+        let possibleAppNames = [
+            appName + ".app",
+            ext.name + ".app"
+        ]
+
+        let derivedData = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Developer/Xcode/DerivedData", isDirectory: true)
+
+        if let enumerator = FileManager.default.enumerator(
+            at: derivedData,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            for case let fileURL as URL in enumerator {
+                if possibleAppNames.contains(fileURL.lastPathComponent) {
+                    return fileURL
+                }
+            }
+        }
+
+        return nil
     }
 }

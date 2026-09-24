@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Collapsible bottom drawer displaying live streaming terminal output.
-/// Conforms to Story 1.4 acceptance criteria.
+/// Conforms to Story 1.4 and macOS 26/27 Liquid Glass design principles.
 @MainActor
 public struct LogDrawerView: View {
     @Bindable var viewModel: LogDrawerViewModel
@@ -25,11 +25,17 @@ public struct LogDrawerView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(.ultraThinMaterial)
         .overlay(
             Rectangle()
                 .frame(height: 1)
-                .foregroundStyle(Color.secondary.opacity(0.2)),
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.2), Color.white.opacity(0.04), Color.clear],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                ),
             alignment: .top
         )
     }
@@ -118,7 +124,6 @@ public struct LogDrawerView: View {
                             Text(entry.text)
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundStyle(entry.isError ? Color.red : Color.primary)
-                                .textSelection(.enabled)
                         }
                         .id(entry.id)
                     }
@@ -126,9 +131,9 @@ public struct LogDrawerView: View {
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .background(Color(nsColor: .textBackgroundColor).opacity(0.85))
+            .background(Color.black.opacity(0.3))
             .onChange(of: viewModel.entries.count) { _, _ in
-                if viewModel.autoScroll, let last = viewModel.entries.last {
+                if let last = viewModel.entries.last {
                     proxy.scrollTo(last.id, anchor: .bottom)
                 }
             }

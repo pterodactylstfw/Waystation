@@ -40,13 +40,23 @@ public actor LaunchdManager {
     public func ensureAgentUpToDate() async {
         guard isAgentInstalled(), let executablePath = Bundle.main.executablePath else { return }
         if let content = try? String(contentsOf: plistURL, encoding: .utf8), !content.contains(executablePath) {
-            await installAgent()
+            _ = await installAgent()
+        }
+    }
+
+    /// Synchronizes the background LaunchAgent state with app settings.
+    public func syncWithSettings(enabled: Bool, intervalDays: Int = 5) async {
+        if enabled {
+            _ = await installAgent(intervalDays: intervalDays)
+        } else {
+            await uninstallAgent()
         }
     }
 
     /// Installs and loads the launchd agent to automatically re-sign extensions in the background.
-    public func installAgent(intervalDays: Int = 5) async {
-        guard let executablePath = Bundle.main.executablePath else { return }
+    @discardableResult
+    public func installAgent(intervalDays: Int = 5) async -> Bool {
+        guard let executablePath = Bundle.main.executablePath else { return false }
 
         do {
             try fileManager.createDirectory(at: launchAgentsDirectory, withIntermediateDirectories: true)
@@ -57,6 +67,7 @@ public actor LaunchdManager {
 
             // Calculate interval in seconds (default: 5 days = 432,000 seconds)
             let intervalSeconds = max(1, intervalDays) * 86400
+            let bundleID = Bundle.main.bundleIdentifier ?? "com.pterodactylstfw.Waystation"
 
             let plistContent = """
             <?xml version="1.0" encoding="UTF-8"?>
@@ -65,6 +76,10 @@ public actor LaunchdManager {
             <dict>
                 <key>Label</key>
                 <string>\(Self.agentLabel)</string>
+                <key>AssociatedBundleIdentifiers</key>
+                <array>
+                    <string>\(bundleID)</string>
+                </array>
                 <key>ProgramArguments</key>
                 <array>
                     <string>\(executablePath)</string>
@@ -87,8 +102,9 @@ public actor LaunchdManager {
             // Unload previous instance if present, then load new agent
             _ = try? await processRunner.run(command: "/bin/launchctl", arguments: ["unload", plistURL.path], onOutputLine: nil)
             _ = try? await processRunner.run(command: "/bin/launchctl", arguments: ["load", plistURL.path], onOutputLine: nil)
+            return fileManager.fileExists(atPath: plistURL.path)
         } catch {
-            // Silently handled or logged
+            return false
         }
     }
 

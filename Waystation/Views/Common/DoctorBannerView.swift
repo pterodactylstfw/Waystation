@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Warning banner displayed when Xcode Command Line Tools or converter tools are missing.
-/// Fulfills Story 1.1 acceptance criteria.
+/// Conforms to Liquid Glass design standards (macOS 26/27).
 public struct DoctorBannerView: View {
     @Bindable var appState: AppState
 
@@ -12,9 +12,15 @@ public struct DoctorBannerView: View {
     public var body: some View {
         if appState.showDoctorWarning, let report = appState.doctorReport {
             HStack(alignment: .center, spacing: 14) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.title2)
-                    .foregroundStyle(.orange)
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.orange.opacity(0.2))
+                        .frame(width: 36, height: 36)
+
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(.orange)
+                }
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title(for: report))
@@ -55,14 +61,7 @@ public struct DoctorBannerView: View {
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 12)
-            .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(Color(nsColor: .controlBackgroundColor))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 10)
-                            .stroke(Color.orange.opacity(0.4), lineWidth: 1)
-                    )
-            )
+            .liquidGlass(cornerRadius: 14, intensity: .prominent, tintColor: .orange)
             .padding(.horizontal, 16)
             .padding(.top, 8)
             .transition(.move(edge: .top).combined(with: .opacity))

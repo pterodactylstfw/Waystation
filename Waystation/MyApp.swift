@@ -45,9 +45,12 @@ struct MyApp: App {
                 exit(0)
             }
         } else {
-            // Keep background launch agent path synced if app was moved
+            // Keep background launch agent path synced if app was moved or settings enabled
             Task {
-                await LaunchdManager.shared.ensureAgentUpToDate()
+                await LaunchdManager.shared.syncWithSettings(
+                    enabled: AppSettings.shared.autoResignEnabled,
+                    intervalDays: AppSettings.shared.autoResignIntervalDays
+                )
             }
         }
     }

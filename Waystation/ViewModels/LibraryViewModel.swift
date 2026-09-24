@@ -1,31 +1,26 @@
 import SwiftUI
-import Observation
 
-/// ViewModel managing state and actions for the Installed Extensions Library.
-/// Conforms to AD-1, Story 3.1, Story 3.2, and Story 3.3 acceptance criteria.
+/// ViewModel driving Tab 3 (Library): extension list, search filter, expiration warnings, and batch re-signing.
+/// Conforms to Story 3.1, Story 3.2, Story 3.3, and Swift 6 concurrency specifications.
 @Observable
 @MainActor
-public final class LibraryViewModel: Sendable {
+public final class LibraryViewModel {
     public var extensions: [InstalledExtension] = []
     public var searchText: String = ""
     public var isLoading: Bool = false
     public var errorMessage: String?
-
-    // Signature verification cache
-    public var signatureStatuses: [String: SignatureVerificationResult] = [:]
-    public var isVerifyingSignatures: Bool = false
-
-    // Safari health & integration status
-    public var safariStatus: SafariHealthStatus?
-    public var isCheckingSafari: Bool = false
+    public var extensionToUninstall: InstalledExtension?
+    public var showUninstallConfirmation: Bool = false
 
     // Story 3.2: Re-signing state
     public var isResigningAll: Bool = false
     public var resigningExtensionName: String?
 
-    // Story 3.3: Uninstallation confirmation state
-    public var extensionToUninstall: InstalledExtension?
-    public var showUninstallConfirmation: Bool = false
+    // Signature Verification & Real-time Safari Health State
+    public var signatureStatuses: [String: SignatureVerificationResult] = [:]
+    public var isVerifyingSignatures: Bool = false
+    public var safariStatus: SafariHealthStatus?
+    public var isCheckingSafari: Bool = false
 
     public let logDrawerViewModel: LogDrawerViewModel?
     private let registry: ExtensionRegistry
@@ -38,45 +33,47 @@ public final class LibraryViewModel: Sendable {
     ) {
         self.registry = registry
         self.signingManager = signingManager
-        self.logDrawerViewModel = logDrawerViewModel
+        self.logDrawerViewModel = logDrawerViewModel ?? .shared
     }
 
-    /// Filtered list of extensions based on search query.
+    /// Filtered extensions matching the user's search query (Story 3.1).
     public var filteredExtensions: [InstalledExtension] {
-        if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        guard !searchText.trimmingCharacters(in: .whitespaces).isEmpty else {
             return extensions
         }
+        let query = searchText.lowercased()
         return extensions.filter { ext in
-            ext.name.localizedCaseInsensitiveContains(searchText) ||
-            ext.bundleIdentifier.localizedCaseInsensitiveContains(searchText)
+            ext.name.lowercased().contains(query) ||
+            ext.bundleIdentifier.lowercased().contains(query) ||
+            ext.version.lowercased().contains(query)
         }
     }
 
-    /// Loads all installed extensions from the registry and checks their physical presence on disk.
+    /// Loads all installed extensions from the registry and checks their real-time status.
     public func loadExtensions() async {
         isLoading = true
         errorMessage = nil
         do {
             let loaded = try await registry.loadAll()
             self.extensions = loaded.sorted { $0.installedDate > $1.installedDate }
-            Task {
-                await verifyAllSignatures()
-                await checkSafariHealth()
-            }
+            isLoading = false
+            await verifyAllSignatures()
+            await checkSafariHealth()
         } catch {
-            self.errorMessage = "Nu s-au putut încărca extensiile: \(error.localizedDescription)"
+            self.errorMessage = "Failed to load installed extensions: \(error.localizedDescription)"
+            isLoading = false
         }
-        isLoading = false
     }
 
-    /// Asynchronously runs codesign verification on every installed extension.
+    /// Verifies on-disk code signatures for all installed extensions in parallel.
     public func verifyAllSignatures() async {
         isVerifyingSignatures = true
         var results: [String: SignatureVerificationResult] = [:]
 
         for ext in extensions {
-            if let bundleURL = await signingManager.resolveAppBundle(for: ext) {
-                let verification = await signingManager.verifySignature(for: bundleURL)
+            let appURL = ext.containerAppURL
+            if FileManager.default.fileExists(atPath: appURL.path) {
+                let verification = await signingManager.verifySignature(for: appURL)
                 results[ext.id] = verification
             } else {
                 results[ext.id] = SignatureVerificationResult(
@@ -102,15 +99,14 @@ public final class LibraryViewModel: Sendable {
 
     /// Requests automated toggle of "Allow Unsigned Extensions" in Safari.
     public func toggleSafariUnsignedExtensions() async {
-        let success = await SafariAutomationService.shared.toggleAllowUnsignedExtensions { [weak self] line in
+        let drawer = self.logDrawerViewModel
+        _ = await SafariAutomationService.shared.toggleAllowUnsignedExtensions { line in
             Task { @MainActor in
-                self?.logDrawerViewModel?.append(line: line)
+                drawer?.append(line: line)
             }
         }
-        if success {
-            try? await Task.sleep(nanoseconds: 500_000_000)
-            await checkSafariHealth()
-        }
+        try? await Task.sleep(nanoseconds: 800_000_000)
+        await checkSafariHealth()
     }
 
     /// Re-signs all installed extensions in batch and resets their expiration countdowns to 7 days (Story 3.2).
@@ -124,12 +120,12 @@ public final class LibraryViewModel: Sendable {
 
         do {
             let updated = try await signingManager.reSignAll(
-                onProgress: { [self] current, total, name in
-                    Task { @MainActor in
-                        self.resigningExtensionName = "\(name) (\(current)/\(total))"
+                onProgress: { [weak self] current, total, name in
+                    Task { @MainActor [weak self] in
+                        self?.resigningExtensionName = "\(name) (\(current)/\(total))"
                     }
                 },
-                onOutputLine: { [drawer] line in
+                onOutputLine: { line in
                     Task { @MainActor in
                         drawer?.append(line: line)
                     }
@@ -166,36 +162,28 @@ public final class LibraryViewModel: Sendable {
         self.showUninstallConfirmation = true
     }
 
-    /// Executes permanent uninstallation of the selected extension (Story 3.3).
+    /// Confirms and performs uninstallation of the active extension (Story 3.3).
     public func confirmUninstall() async {
         guard let ext = extensionToUninstall else { return }
-        showUninstallConfirmation = false
-        extensionToUninstall = nil
+        errorMessage = nil
 
-        logDrawerViewModel?.append(line: "[Uninstall] Removing '\(ext.name)'...")
-
-        // 1. Unregister from LaunchServices and delete .app bundle from disk
-        let appURL = ext.containerAppURL
-        let lsregisterPath = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
-        _ = try? await ProcessRunner.shared.run(command: lsregisterPath, arguments: ["-u", appURL.path])
-
-        if FileManager.default.fileExists(atPath: appURL.path) {
-            do {
-                try FileManager.default.removeItem(at: appURL)
-                logDrawerViewModel?.append(line: "[Uninstall] Deleted container bundle at '\(appURL.path)'.")
-            } catch {
-                logDrawerViewModel?.append(line: "[Uninstall] Warning: Could not delete bundle: \(error.localizedDescription)")
-            }
-        }
-
-        // 2. Remove entry from registry.json
         do {
             try await registry.remove(id: ext.id)
-            logDrawerViewModel?.append(line: "[Uninstall] Removed '\(ext.name)' from registry.")
-            await loadExtensions()
+
+            // Remove container .app from disk if present
+            let appURL = ext.containerAppURL
+            if FileManager.default.fileExists(atPath: appURL.path) {
+                try? FileManager.default.removeItem(at: appURL)
+            }
+
+            self.extensions.removeAll { $0.id == ext.id }
+            self.extensionToUninstall = nil
+            self.showUninstallConfirmation = false
+            logDrawerViewModel?.append(line: "[Library] Uninstalled extension '\(ext.name)'.")
         } catch {
-            errorMessage = "Nu s-a putut șterge extensia din registru: \(error.localizedDescription)"
-            logDrawerViewModel?.append(line: "[Uninstall] Error: \(error.localizedDescription)")
+            self.errorMessage = "Failed to uninstall extension: \(error.localizedDescription)"
+            self.extensionToUninstall = nil
+            self.showUninstallConfirmation = false
         }
     }
 }

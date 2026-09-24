@@ -11,7 +11,7 @@ public enum SafariUnsignedStatus: Sendable, Equatable {
     case accessibilityRequired
     case unknown(String)
 
-    public var title: String {
+    nonisolated public var title: String {
         switch self {
         case .enabled: return "Unsigned Extensions: Active"
         case .disabled: return "Unsigned Extensions: Disabled"
@@ -22,8 +22,20 @@ public enum SafariUnsignedStatus: Sendable, Equatable {
         }
     }
 
-    public var isOperational: Bool {
+    nonisolated public var isOperational: Bool {
         self == .enabled
+    }
+
+    nonisolated public static func == (lhs: SafariUnsignedStatus, rhs: SafariUnsignedStatus) -> Bool {
+        switch (lhs, rhs) {
+        case (.enabled, .enabled): return true
+        case (.disabled, .disabled): return true
+        case (.safariNotRunning, .safariNotRunning): return true
+        case (.developMenuMissing, .developMenuMissing): return true
+        case (.accessibilityRequired, .accessibilityRequired): return true
+        case (.unknown(let a), .unknown(let b)): return a == b
+        default: return false
+        }
     }
 }
 
@@ -33,7 +45,7 @@ public struct SafariHealthStatus: Sendable, Equatable {
     public let unsignedStatus: SafariUnsignedStatus
     public let hasAccessibility: Bool
 
-    public init(
+    nonisolated public init(
         isSafariRunning: Bool,
         unsignedStatus: SafariUnsignedStatus,
         hasAccessibility: Bool
@@ -41,6 +53,12 @@ public struct SafariHealthStatus: Sendable, Equatable {
         self.isSafariRunning = isSafariRunning
         self.unsignedStatus = unsignedStatus
         self.hasAccessibility = hasAccessibility
+    }
+
+    nonisolated public static func == (lhs: SafariHealthStatus, rhs: SafariHealthStatus) -> Bool {
+        lhs.isSafariRunning == rhs.isSafariRunning &&
+        lhs.unsignedStatus == rhs.unsignedStatus &&
+        lhs.hasAccessibility == rhs.hasAccessibility
     }
 }
 
@@ -65,22 +83,22 @@ public actor SafariAutomationService {
     }
 
     /// Checks if Waystation currently has macOS Accessibility permissions for GUI automation.
-    public func isAccessibilityGranted() -> Bool {
+    nonisolated public func isAccessibilityGranted() -> Bool {
         AXIsProcessTrusted()
     }
 
     /// Checks if Safari is currently running in memory.
-    public func isSafariRunning() -> Bool {
+    nonisolated public func isSafariRunning() -> Bool {
         !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").isEmpty
     }
 
     /// Returns the PID of the active Safari instance, if running.
-    public func currentSafariPID() -> pid_t? {
+    nonisolated public func currentSafariPID() -> pid_t? {
         NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").first?.processIdentifier
     }
 
     /// Requests macOS Accessibility permissions by opening the system authorization prompt.
-    public func requestAccessibilityPermission() {
+    nonisolated public func requestAccessibilityPermission() {
         let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         let options = [key: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
@@ -151,7 +169,7 @@ public actor SafariAutomationService {
                     end if
                 end try
 
-                -- 4. Develop menu is present, assume ready for session
+                -- 4. Develop menu is present, but window "Developer" not open
                 return "develop_menu_ready"
             end tell
         end tell
@@ -163,7 +181,7 @@ public actor SafariAutomationService {
 
             let status: SafariUnsignedStatus
             switch trimmed {
-            case "enabled", "develop_menu_ready":
+            case "enabled":
                 self.cachedUnsignedEnabledForSession = true
                 status = .enabled
             case "disabled":
@@ -174,6 +192,14 @@ public actor SafariAutomationService {
                 status = .safariNotRunning
             case "develop_menu_missing":
                 status = .developMenuMissing
+            case "develop_menu_ready":
+                // Apple unchecks "Allow Unsigned Extensions" on every Safari restart/quit.
+                // If not yet verified or enabled in this session, it defaults to disabled.
+                if self.cachedUnsignedEnabledForSession {
+                    status = .enabled
+                } else {
+                    status = .disabled
+                }
             default:
                 status = .unknown(trimmed.isEmpty ? "Could not verify" : trimmed)
             }
@@ -232,6 +258,9 @@ public actor SafariAutomationService {
         onOutputLine?("[Safari] Launching Safari...")
         _ = try? await processRunner.run(command: "/usr/bin/open", arguments: ["-a", "Safari"], onOutputLine: onOutputLine)
 
+        // Give Safari a moment to initialize its menu bar
+        try? await Task.sleep(nanoseconds: 400_000_000)
+
         // 3. Attempt automated toggle if enabled and Accessibility is granted
         if autoToggleDevelopOption {
             if isAccessibilityGranted() {
@@ -255,13 +284,13 @@ public actor SafariAutomationService {
         tell application "System Events"
             tell (first process whose bundle identifier is "com.apple.Safari")
                 set frontmost to true
-                delay 0.2
+                delay 0.3
                 
                 -- Check if Developer window is already open, if not open Developer Settings
                 if not (exists window "Developer") then
                     try
                         click menu item "Developer Settings…" of menu "Develop" of menu bar item "Develop" of menu bar 1
-                        delay 0.3
+                        delay 0.5
                     end try
                 end if
 
@@ -269,8 +298,15 @@ public actor SafariAutomationService {
                     tell window "Developer"
                         try
                             set chk to checkbox "Allow unsigned extensions" of group 1 of group 1
-                            click chk
-                            return "Toggled successfully"
+                            if (value of chk is 0) then
+                                click chk
+                                delay 0.3
+                            end if
+                            if (value of chk is 1) then
+                                return "Toggled successfully: 1"
+                            else
+                                return "Prompting authorization"
+                            end if
                         on error errMsg
                             return "Error: " & errMsg
                         end try
@@ -282,7 +318,7 @@ public actor SafariAutomationService {
                     set devMenu to menu "Develop" of menu bar item "Develop" of menu bar 1
                     if exists menu item "Allow Unsigned Extensions" of devMenu then
                         click menu item "Allow Unsigned Extensions" of devMenu
-                        return "Toggled successfully"
+                        return "Toggled successfully: 1"
                     end if
                 on error errMsg
                     return "Error: " & errMsg
@@ -299,16 +335,21 @@ public actor SafariAutomationService {
                 arguments: ["-e", script],
                 onOutputLine: onOutputLine
             )
-            if result.isSuccess && result.standardOutput.contains("Toggled successfully") {
+            let trimmed = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.contains("Toggled successfully: 1") {
                 self.cachedUnsignedEnabledForSession = true
-                onOutputLine?("[Safari] Successfully toggled 'Allow Unsigned Extensions' in Safari.")
+                onOutputLine?("[Safari] Successfully activated 'Allow Unsigned Extensions'.")
+                return true
+            } else if trimmed.contains("Prompting authorization") {
+                self.cachedUnsignedEnabledForSession = true
+                onOutputLine?("[Safari] Complete authorization on screen (Touch ID / password) to enable unsigned extensions.")
                 return true
             } else {
-                onOutputLine?("[Safari] \(result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines))")
+                onOutputLine?("[Safari] \(trimmed)")
                 return false
             }
         } catch {
-            onOutputLine?("[Safari] Could not toggle menu: \(error.localizedDescription)")
+            onOutputLine?("[Safari] Could not access Safari Developer menu: \(error.localizedDescription)")
             return false
         }
     }

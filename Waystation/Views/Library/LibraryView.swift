@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Tab 3 View: Displays the persistent library of installed Safari Web Extensions.
-/// Conforms strictly to Story 3.1, Story 3.2, Story 3.3, and AD-1/HIG standards.
+/// Conforms to macOS 26/27 Liquid Glass design principles.
 public struct LibraryView: View {
     @Bindable var viewModel: LibraryViewModel
     var onExploreStore: (() -> Void)?
@@ -17,19 +17,17 @@ public struct LibraryView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Header Bar with Search and Re-sign action
+            // Header Bar with Search, Status Chip, and Actions
             headerBar
 
             Divider()
 
-            // Real-time Safari Health & Unsigned Status
-            safariHealthBanner
+            // Floating Attention Alert (only shown when Safari is closed or action is needed)
+            safariAttentionCard
 
-            Divider()
-
+            // Modern Tactile Persistence Tip Card
             if !viewModel.extensions.isEmpty && showPersistenceTip {
-                persistenceTipBanner
-                Divider()
+                persistenceTipCard
             }
 
             // Main Content Area
@@ -86,144 +84,10 @@ public struct LibraryView: View {
         }
     }
 
-    private var safariHealthBanner: some View {
-        HStack(spacing: 8) {
-            if let safari = viewModel.safariStatus {
-                switch safari.unsignedStatus {
-                case .enabled:
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(Color.green)
-                    Text("Safari is active with 'Allow Unsigned Extensions' enabled")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.primary)
-
-                case .disabled:
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(Color.orange)
-                    Text("Safari is open, but 'Allow Unsigned Extensions' is disabled")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.primary)
-
-                    Spacer()
-
-                    Button("Enable in Safari") {
-                        Task {
-                            await viewModel.toggleSafariUnsignedExtensions()
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-
-                case .safariNotRunning:
-                    Image(systemName: "safari")
-                        .foregroundStyle(.secondary)
-                    Text("Safari is closed. Launch Safari to activate extensions.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-
-                    Spacer()
-
-                    Button("Launch Safari") {
-                        Task {
-                            await SafariAutomationService.shared.launchSafariAndPrepare()
-                            try? await Task.sleep(nanoseconds: 1_000_000_000)
-                            await viewModel.checkSafariHealth()
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-
-                case .developMenuMissing:
-                    Image(systemName: "wrench.and.screwdriver")
-                        .foregroundStyle(Color.orange)
-                    Text("Enable Developer features in Safari Settings > Advanced.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-
-                case .accessibilityRequired:
-                    Image(systemName: "hand.raised.fill")
-                        .foregroundStyle(Color.orange)
-                    Text("Accessibility permission needed to auto-detect Safari state.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-
-                    Spacer()
-
-                    Button("Grant") {
-                        SafariAutomationService.shared.requestAccessibilityPermission()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-
-                case .unknown(let msg):
-                    Image(systemName: "info.circle")
-                        .foregroundStyle(.secondary)
-                    Text(msg)
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-            } else {
-                ProgressView()
-                    .controlSize(.small)
-                Text("Checking Safari status...")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-
-            if viewModel.safariStatus?.unsignedStatus != .disabled &&
-               viewModel.safariStatus?.unsignedStatus != .safariNotRunning &&
-               viewModel.safariStatus?.unsignedStatus != .accessibilityRequired {
-                Spacer()
-            }
-
-            Button {
-                Task {
-                    await viewModel.checkSafariHealth()
-                    await viewModel.verifyAllSignatures()
-                }
-            } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-            }
-            .buttonStyle(.plain)
-            .help("Refresh Safari and extension signature status")
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
-        .background(
-            viewModel.safariStatus?.unsignedStatus == .disabled ? Color.orange.opacity(0.1) : Color(nsColor: .controlBackgroundColor).opacity(0.5)
-        )
-    }
-
-    private var persistenceTipBanner: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "info.circle.fill")
-                .foregroundStyle(Color.accentColor)
-
-            Text("Tip: Safari keeps unsigned extensions active until you quit with ⌘Q. Close tabs with ⌘W to keep extensions running continuously.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-
-            Spacer()
-
-            Button {
-                showPersistenceTip = false
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
-        .background(Color.accentColor.opacity(0.06))
-    }
-
+    // MARK: - Header Bar
     private var headerBar: some View {
         HStack(spacing: 12) {
-            // Search Field
+            // Search Field with Translucent Glass Fill
             HStack(spacing: 6) {
                 Image(systemName: "magnifyingglass")
                     .font(.system(size: 11))
@@ -247,24 +111,66 @@ public struct LibraryView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor))
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor).opacity(0.6))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(Color(nsColor: .separatorColor).opacity(0.5), lineWidth: 1)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.18), Color.white.opacity(0.04)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 1
+                    )
             )
-            .frame(maxWidth: 320)
+            .frame(maxWidth: 300)
 
             Spacer()
+
+            // Safari Active Status Pill (when completely healthy and operational)
+            if let safari = viewModel.safariStatus, safari.unsignedStatus == .enabled {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Color.green)
+                        .frame(width: 7, height: 7)
+                        .shadow(color: Color.green.opacity(0.8), radius: 4)
+
+                    Text("Safari Active")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.primary)
+
+                    Button {
+                        Task {
+                            await viewModel.checkSafariHealth()
+                            await viewModel.verifyAllSignatures()
+                        }
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Refresh Safari status")
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Color.green.opacity(0.12))
+                .clipShape(Capsule())
+                .overlay(
+                    Capsule()
+                        .stroke(Color.green.opacity(0.3), lineWidth: 1)
+                )
+            }
 
             // Open Safari Action
             Button {
                 Task {
                     await SafariAutomationService.shared.launchSafariAndPrepare(
-                        autoToggleDevelopOption: AppSettings.shared.autoToggleSafariDevelopOption
+                        autoToggleDevelopOption: true
                     )
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    try? await Task.sleep(nanoseconds: 1_200_000_000)
                     await viewModel.checkSafariHealth()
                 }
             } label: {
@@ -297,7 +203,114 @@ public struct LibraryView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(Color(nsColor: .windowBackgroundColor))
+        .background(.ultraThinMaterial)
+    }
+
+    // MARK: - Floating Attention Card (Only when Safari needs attention)
+    @ViewBuilder
+    private var safariAttentionCard: some View {
+        if let safari = viewModel.safariStatus, safari.unsignedStatus != .enabled {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(statusColor(safari.unsignedStatus).opacity(0.2))
+                        .frame(width: 34, height: 34)
+
+                    Image(systemName: statusIcon(safari.unsignedStatus))
+                        .font(.system(size: 16))
+                        .foregroundStyle(statusColor(safari.unsignedStatus))
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(statusTitle(safari.unsignedStatus))
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.primary)
+
+                    Text(statusSubtitle(safari.unsignedStatus))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                if let buttonInfo = statusAction(safari.unsignedStatus) {
+                    Button(buttonInfo.title) {
+                        buttonInfo.action()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                }
+
+                Button {
+                    Task {
+                        await viewModel.checkSafariHealth()
+                        await viewModel.verifyAllSignatures()
+                    }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Refresh")
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .liquidGlass(cornerRadius: 14, intensity: .prominent, tintColor: statusColor(safari.unsignedStatus))
+            .padding(.horizontal, 16)
+            .padding(.top, 10)
+        }
+    }
+
+    // MARK: - Persistence Tip Card
+    private var persistenceTipCard: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.15))
+                    .frame(width: 28, height: 28)
+
+                Image(systemName: "lightbulb.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.accentColor)
+            }
+
+            HStack(spacing: 6) {
+                Text("Tip: Keep extensions active permanently by closing tabs with")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+
+                KeyCapView("⌘ W")
+
+                Text("instead of quitting with")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+
+                KeyCapView("⌘ Q")
+            }
+
+            Spacer()
+
+            Button {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    showPersistenceTip = false
+                }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .padding(5)
+                    .background(Color.secondary.opacity(0.1))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss tip")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .liquidGlass(cornerRadius: 12, intensity: .subtle, tintColor: Color.accentColor)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
     }
 
     private var emptyStateView: some View {
@@ -349,6 +362,82 @@ public struct LibraryView: View {
             }
             .padding(16)
         }
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.4))
+        .background(Color.clear)
+    }
+
+    // MARK: - Attention Helpers
+    private func statusColor(_ status: SafariUnsignedStatus) -> Color {
+        switch status {
+        case .enabled: return .green
+        case .disabled: return .orange
+        case .safariNotRunning: return .secondary
+        case .developMenuMissing, .accessibilityRequired: return .orange
+        case .unknown: return .secondary
+        }
+    }
+
+    private func statusIcon(_ status: SafariUnsignedStatus) -> String {
+        switch status {
+        case .enabled: return "checkmark.circle.fill"
+        case .disabled: return "exclamationmark.triangle.fill"
+        case .safariNotRunning: return "safari"
+        case .developMenuMissing: return "wrench.and.screwdriver"
+        case .accessibilityRequired: return "hand.raised.fill"
+        case .unknown: return "info.circle"
+        }
+    }
+
+    private func statusTitle(_ status: SafariUnsignedStatus) -> String {
+        switch status {
+        case .enabled: return "Safari is Active"
+        case .disabled: return "Allow Unsigned Extensions is OFF"
+        case .safariNotRunning: return "Safari is Closed (Setting Reset)"
+        case .developMenuMissing: return "Develop Menu Not Enabled"
+        case .accessibilityRequired: return "Accessibility Permission Needed"
+        case .unknown(let msg): return msg
+        }
+    }
+
+    private func statusSubtitle(_ status: SafariUnsignedStatus) -> String {
+        switch status {
+        case .enabled: return "Extensions are registered and running."
+        case .disabled: return "Apple turns off unsigned extensions on every Safari restart. Click 'Enable in Safari' to turn it on."
+        case .safariNotRunning: return "Quitting Safari (⌘Q) unchecks 'Allow Unsigned Extensions'. Launch Safari and re-enable it to run extensions."
+        case .developMenuMissing: return "Check 'Show features for web developers' in Safari Settings > Advanced."
+        case .accessibilityRequired: return "Waystation requires accessibility permission to detect developer menu status."
+        case .unknown: return "Unable to verify current Safari extension configuration."
+        }
+    }
+
+    private struct StatusAction {
+        let title: String
+        let action: () -> Void
+    }
+
+    private func statusAction(_ status: SafariUnsignedStatus) -> StatusAction? {
+        switch status {
+        case .disabled:
+            return StatusAction(title: "Enable in Safari") {
+                Task {
+                    await viewModel.toggleSafariUnsignedExtensions()
+                }
+            }
+        case .safariNotRunning:
+            return StatusAction(title: "Launch & Enable") {
+                Task {
+                    await SafariAutomationService.shared.launchSafariAndPrepare(
+                        autoToggleDevelopOption: true
+                    )
+                    try? await Task.sleep(nanoseconds: 1_200_000_000)
+                    await viewModel.checkSafariHealth()
+                }
+            }
+        case .accessibilityRequired:
+            return StatusAction(title: "Grant Permission") {
+                SafariAutomationService.shared.requestAccessibilityPermission()
+            }
+        default:
+            return nil
+        }
     }
 }

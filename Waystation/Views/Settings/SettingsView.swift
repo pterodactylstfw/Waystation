@@ -32,8 +32,29 @@ public struct SettingsView: View {
         .task {
             let identity = await SigningManager.shared.detectSigningIdentity()
             self.detectedIdentity = identity == "-" ? "Ad-hoc (No developer certificate)" : identity
+            if settings.autoResignEnabled {
+                _ = await LaunchdManager.shared.installAgent(intervalDays: settings.autoResignIntervalDays)
+            }
             self.isAgentActive = await LaunchdManager.shared.isAgentInstalled()
-            self.isAccessibilityGranted = await SafariAutomationService.shared.isAccessibilityGranted()
+            self.isAccessibilityGranted = SafariAutomationService.shared.isAccessibilityGranted()
+        }
+        .onChange(of: settings.autoResignEnabled) { _, isEnabled in
+            Task {
+                if isEnabled {
+                    _ = await LaunchdManager.shared.installAgent(intervalDays: settings.autoResignIntervalDays)
+                } else {
+                    await LaunchdManager.shared.uninstallAgent()
+                }
+                self.isAgentActive = await LaunchdManager.shared.isAgentInstalled()
+            }
+        }
+        .onChange(of: settings.autoResignIntervalDays) { _, newInterval in
+            Task {
+                if settings.autoResignEnabled {
+                    _ = await LaunchdManager.shared.installAgent(intervalDays: newInterval)
+                    self.isAgentActive = await LaunchdManager.shared.isAgentInstalled()
+                }
+            }
         }
     }
 
@@ -93,7 +114,7 @@ public struct SettingsView: View {
 
                     HStack(spacing: 6) {
                         Circle()
-                            .fill(isAgentActive ? Color.green : Color.secondary)
+                            .fill(isAgentActive ? Color.green : Color.orange)
                             .frame(width: 8, height: 8)
                         Text(isAgentActive ? "macOS LaunchAgent active in background" : "LaunchAgent initializing...")
                             .font(.caption)
@@ -165,10 +186,10 @@ public struct SettingsView: View {
 
                     if !isAccessibilityGranted {
                         Button("Grant Permission") {
+                            SafariAutomationService.shared.requestAccessibilityPermission()
                             Task {
-                                await SafariAutomationService.shared.requestAccessibilityPermission()
                                 try? await Task.sleep(nanoseconds: 1_000_000_000)
-                                self.isAccessibilityGranted = await SafariAutomationService.shared.isAccessibilityGranted()
+                                self.isAccessibilityGranted = SafariAutomationService.shared.isAccessibilityGranted()
                             }
                         }
                         .buttonStyle(.bordered)

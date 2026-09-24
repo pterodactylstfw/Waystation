@@ -57,13 +57,24 @@ enum WebStoreScript {
         }
 
         function isThemePage() {
-            // Check if page or breadcrumbs indicate this is a theme
             const path = window.location.pathname.toLowerCase();
-            if (path.includes('/themes') || path.includes('/theme/')) return true;
-            
-            const breadcrumbs = document.querySelectorAll('a, span');
-            for (const b of breadcrumbs) {
-                if ((b.textContent || '').trim().toLowerCase() === 'themes') {
+            if (path.includes('/category/themes')) return true;
+
+            // Check if item specifically belongs to theme categories or collections
+            const themeSubcategories = document.querySelectorAll('a[href*="/category/themes/"]');
+            if (themeSubcategories.length > 0) return true;
+
+            const themeCollections = document.querySelectorAll('a[href*="collection/chrome_themes"]');
+            if (themeCollections.length > 0) return true;
+
+            const categoryLinks = document.querySelectorAll('a[href*="category/themes"]');
+            for (const link of categoryLinks) {
+                // Ignore top navigation tabs or header menu items
+                if (link.closest('header, nav, [role="navigation"], [role="tab"], [role="tablist"]')) {
+                    continue;
+                }
+                const text = (link.textContent || '').trim().toLowerCase();
+                if (text === 'theme') {
                     return true;
                 }
             }
@@ -208,14 +219,14 @@ enum WebStoreScript {
             const buttons = document.querySelectorAll('button');
             for (const btn of buttons) {
                 const text = (btn.textContent || '').trim().toLowerCase();
-                if (text.includes('add to chrome')) {
+                if (text.includes('add to chrome') || text.includes('add to safari') || text.includes('themes not supported')) {
                     if (isTheme) {
                         btn.setAttribute('disabled', 'true');
                         btn.style.setProperty('background-color', '#8e8e93', 'important');
                         btn.style.setProperty('cursor', 'not-allowed', 'important');
                         btn.style.setProperty('opacity', '0.6', 'important');
                         for (const node of btn.childNodes) {
-                            if (node.nodeType === 3 && node.textContent.includes('Add to Chrome')) {
+                            if (node.nodeType === 3 && (node.textContent.includes('Add to Chrome') || node.textContent.includes('Add to Safari'))) {
                                 node.textContent = 'Themes Not Supported';
                             }
                         }
@@ -229,7 +240,7 @@ enum WebStoreScript {
                         btn.style.setProperty('pointer-events', 'auto', 'important');
 
                         for (const node of btn.childNodes) {
-                            if (node.nodeType === 3 && node.textContent.includes('Add to Chrome')) {
+                            if (node.nodeType === 3 && (node.textContent.includes('Add to Chrome') || node.textContent.includes('Themes Not Supported'))) {
                                 node.textContent = 'Add to Safari';
                             }
                         }

@@ -16,16 +16,16 @@ public struct ConverterService: Sendable {
     /// Converts an ingested package into a native Xcode project and compiles the container app.
     public func convert(
         package: IngestedPackage,
+        destinationURL: URL? = nil,
         bundleIdentifier: String? = nil,
         onOutputLine: (@Sendable (String) -> Void)? = nil
     ) async throws -> ConvertedProject {
         // 1. Prepare unique output directory inside ~/Library/Caches/org.waystation.app/converted/
-        let cacheBaseURL = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        let appConvertedBase = cacheBaseURL
+        let cacheBaseURL = destinationURL ?? fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first!
             .appendingPathComponent("org.waystation.app", isDirectory: true)
             .appendingPathComponent("converted", isDirectory: true)
 
-        let projectLocationURL = appConvertedBase.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let projectLocationURL = cacheBaseURL.appendingPathComponent(UUID().uuidString, isDirectory: true)
 
         do {
             try fileManager.createDirectory(at: projectLocationURL, withIntermediateDirectories: true)
@@ -83,7 +83,7 @@ public struct ConverterService: Sendable {
 
         onOutputLine?("Conversion succeeded! Xcode project ready at: \(xcodeProjURL.path)")
 
-        // 5. Patch project.pbxproj to fix macOS deployment target and bundle ID casing
+        // 5. Patch project.pbxproj to fix macOS deployment target and bundle ID mismatch
         patchXcodeProject(at: xcodeProjURL, appName: cleanAppName, bundleID: resolvedBundleID)
 
         // 6. Build the container .app bundle and copy to ~/Library/Application Support/Waystation/Extensions/
@@ -117,10 +117,31 @@ public struct ConverterService: Sendable {
             with: "MACOSX_DEPLOYMENT_TARGET = 14.0;"
         )
 
-        let lowercasedID = bundleID.lowercased()
-        if lowercasedID != bundleID {
-            updated = updated.replacingOccurrences(of: lowercasedID, with: bundleID)
+        // Ensure both host app and extension targets have perfectly aligned bundle identifiers.
+        // Apple's safari-web-extension-converter bug: it slugifies app-name with uppercase/hyphens
+        // for the parent app target (e.g. org.waystation.ext.Control-Panel-for-YouTube)
+        // while the extension target gets bundleID.Extension (org.waystation.ext.controlpanelforyoutube.Extension),
+        // causing xcodebuild error: "Embedded binary's bundle identifier is not prefixed with parent app's bundle identifier".
+        var lines = updated.components(separatedBy: "\n")
+        for i in 0..<lines.count {
+            let line = lines[i]
+            if line.contains("PRODUCT_BUNDLE_IDENTIFIER =") {
+                if line.contains(".Extension") {
+                    lines[i] = line.replacingOccurrences(
+                        of: #"PRODUCT_BUNDLE_IDENTIFIER = [^;]+;"#,
+                        with: "PRODUCT_BUNDLE_IDENTIFIER = \(bundleID).Extension;",
+                        options: .regularExpression
+                    )
+                } else {
+                    lines[i] = line.replacingOccurrences(
+                        of: #"PRODUCT_BUNDLE_IDENTIFIER = [^;]+;"#,
+                        with: "PRODUCT_BUNDLE_IDENTIFIER = \(bundleID);",
+                        options: .regularExpression
+                    )
+                }
+            }
         }
+        updated = lines.joined(separator: "\n")
 
         try? updated.write(to: pbxprojURL, atomically: true, encoding: .utf8)
     }
@@ -224,16 +245,23 @@ public struct ConverterService: Sendable {
                 onOutputLine: nil
             )
 
-            // Force-register the final container app in Application Support
+            // Register the newly staged .app in Application Support with LaunchServices
             _ = try? await processRunner.run(
                 command: lsregisterPath,
                 arguments: ["-f", destinationAppURL.path],
                 onOutputLine: nil
             )
 
-            // Launch the container app to register the Safari extension
-            _ = try? await processRunner.run(command: "/usr/bin/open", arguments: [destinationAppURL.path], onOutputLine: nil)
-            onOutputLine?("[Build] Launched container app to register with Safari.")
+            // Auto-launch container app once if setting enabled, so Safari registers extension immediately (AD-1)
+            let shouldAutoLaunch = await AppSettings.shared.autoOpenSafariOnInstall
+            if shouldAutoLaunch {
+                onOutputLine?("[Build] Auto-registering extension container with macOS...")
+                _ = try? await processRunner.run(
+                    command: "/usr/bin/open",
+                    arguments: ["-g", destinationAppURL.path],
+                    onOutputLine: nil
+                )
+            }
 
             return destinationAppURL
         }
