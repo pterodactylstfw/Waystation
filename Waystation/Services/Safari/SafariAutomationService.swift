@@ -55,9 +55,29 @@ public actor SafariAutomationService {
     private let registry: ExtensionRegistry
     private let lsregisterPath = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
-    /// Cached session state: remember if enabled for current Safari process without flashing UI windows.
-    private var lastKnownSafariPID: pid_t?
-    private var cachedUnsignedEnabledForSession: Bool = false
+    /// Persisted session state: remember if enabled for current Safari process across Waystation cold boots.
+    private var lastKnownSafariPID: pid_t? {
+        get {
+            let pid = UserDefaults.standard.integer(forKey: "WaystationLastKnownSafariPID")
+            return pid > 0 ? pid_t(pid) : nil
+        }
+        set {
+            if let val = newValue {
+                UserDefaults.standard.set(Int(val), forKey: "WaystationLastKnownSafariPID")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "WaystationLastKnownSafariPID")
+            }
+        }
+    }
+
+    private var cachedUnsignedEnabledForSession: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: "WaystationCachedUnsignedEnabled")
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "WaystationCachedUnsignedEnabled")
+        }
+    }
 
     public init(
         processRunner: ProcessRunner = .shared,
@@ -99,6 +119,9 @@ public actor SafariAutomationService {
 
     public func checkHealth(forceFreshCheck: Bool = false) async -> SafariHealthStatus {
         guard isSafariRunning() else {
+            // Safari is closed: clear saved session state
+            self.cachedUnsignedEnabledForSession = false
+            self.lastKnownSafariPID = nil
             return SafariHealthStatus(
                 isSafariRunning: false,
                 unsignedStatus: .safariNotRunning,
@@ -151,7 +174,7 @@ public actor SafariAutomationService {
                     return "DEVELOP_MENU_MISSING"
                 end if
 
-                -- Check Developer settings window if open
+                -- 1. Check Developer settings window if open
                 if exists window "Developer" then
                     tell window "Developer"
                         try
@@ -162,7 +185,19 @@ public actor SafariAutomationService {
                     end tell
                 end if
 
-                -- Check Develop menu item directly (Safari 16 and older fallback)
+                -- 2. Check if Web Extension Background Content submenu contains extensions (indicates unsigned extensions active)
+                try
+                    set devMenu to menu "Develop" of menu bar item "Develop" of menu bar 1
+                    if exists menu item "Web Extension Background Content" of devMenu then
+                        set extMenu to menu 1 of menu item "Web Extension Background Content" of devMenu
+                        set subCount to count of menu items of extMenu
+                        if subCount > 0 then
+                            return "ENABLED"
+                        end if
+                    end if
+                end try
+
+                -- 3. Check Develop menu item directly (Safari 16 and older fallback)
                 try
                     set devMenu to menu "Develop" of menu bar item "Develop" of menu bar 1
                     if exists menu item "Allow Unsigned Extensions" of devMenu then
@@ -199,6 +234,10 @@ public actor SafariAutomationService {
             case "DISABLED":
                 return .disabled
             default:
+                // If we couldn't inspect silently, but the current Safari session had previously enabled it, treat as enabled
+                if let currentPID = currentSafariPID(), currentPID == self.lastKnownSafariPID && self.cachedUnsignedEnabledForSession {
+                    return .enabled
+                }
                 return .disabled
             }
         } catch {
@@ -372,10 +411,16 @@ public actor SafariAutomationService {
             )
             let trimmed = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.contains("Toggled successfully: 1") {
+                if let pid = currentSafariPID() {
+                    self.lastKnownSafariPID = pid
+                }
                 self.cachedUnsignedEnabledForSession = true
                 onOutputLine?("[Safari] Successfully activated 'Allow Unsigned Extensions'.")
                 return true
             } else if trimmed.contains("Prompting authorization") {
+                if let pid = currentSafariPID() {
+                    self.lastKnownSafariPID = pid
+                }
                 self.cachedUnsignedEnabledForSession = true
                 onOutputLine?("[Safari] Complete authorization on screen (Touch ID / password) to enable unsigned extensions.")
                 return true

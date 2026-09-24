@@ -199,17 +199,40 @@ struct StoreWebView: NSViewRepresentable {
             })
         }
 
+        private func isInternalStoreOrGoogleHost(_ host: String) -> Bool {
+            let lower = host.lowercased()
+            return lower == "chromewebstore.google.com" ||
+                   lower == "chrome.google.com" ||
+                   lower.hasSuffix(".google.com") ||
+                   lower.hasSuffix(".googleapis.com") ||
+                   lower.hasSuffix(".gstatic.com") ||
+                   lower.hasSuffix(".googleusercontent.com")
+        }
+
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
             decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
         ) {
+            guard let url = navigationAction.request.url else {
+                decisionHandler(.allow)
+                return
+            }
+
+            // Only intercept user-activated link clicks (never iframes, background proxies, or scripts)
+            if navigationAction.navigationType == .linkActivated, let host = url.host {
+                // If it's an external website clicked by user (like YouTube, GitHub, dev sites), open in default browser
+                if !isInternalStoreOrGoogleHost(host) && (url.scheme == "http" || url.scheme == "https") {
+                    NSWorkspace.shared.open(url)
+                    decisionHandler(.cancel)
+                    return
+                }
+            }
+
             // Handle target="_blank" links within the same webview
             if navigationAction.targetFrame == nil {
-                if let url = navigationAction.request.url {
-                    lastLoadedURL = url
-                    webView.load(URLRequest(url: url))
-                }
+                lastLoadedURL = url
+                webView.load(URLRequest(url: url))
                 decisionHandler(.cancel)
                 return
             }
@@ -242,13 +265,6 @@ struct StoreWebView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            Task { @MainActor in
-                viewModel.isLoading = false
-            }
-        }
-
-        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            // Ignore NSURLErrorCancelled (-999) when user navigates or redirects
             if (error as NSError).code == NSURLErrorCancelled {
                 return
             }
@@ -257,12 +273,31 @@ struct StoreWebView: NSViewRepresentable {
             }
         }
 
-        // Handle target="_blank" links / window.open within the same webview
-        func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-            if navigationAction.targetFrame == nil, let url = navigationAction.request.url, url.absoluteString != "about:blank" {
-                lastLoadedURL = url
-                webView.load(URLRequest(url: url))
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            if (error as NSError).code == NSURLErrorCancelled {
+                return
             }
+            Task { @MainActor in
+                viewModel.isLoading = false
+            }
+        }
+
+        // Handle target="_blank" links / window.open within the same webview or external browser
+        func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+            guard let url = navigationAction.request.url, url.absoluteString != "about:blank" else {
+                return nil
+            }
+
+            // Only forward to external browser if the user explicitly clicked a link to an external non-Google site
+            if navigationAction.navigationType == .linkActivated, let host = url.host {
+                if !isInternalStoreOrGoogleHost(host) && (url.scheme == "http" || url.scheme == "https") {
+                    NSWorkspace.shared.open(url)
+                    return nil
+                }
+            }
+
+            lastLoadedURL = url
+            webView.load(URLRequest(url: url))
             return nil
         }
     }

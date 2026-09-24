@@ -16,32 +16,32 @@ struct StoreView: View {
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
-                // Navigation Bar
+                // Top Navigation Bar (compact buttons, no URL address bar)
                 HStack(spacing: 8) {
                     // Navigation buttons
-                    HStack(spacing: 2) {
+                    HStack(spacing: 4) {
                         Button {
                             viewModel.goBack()
                         } label: {
                             Image(systemName: "chevron.backward")
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(.system(size: 12, weight: .semibold))
                         }
                         .buttonStyle(.plain)
                         .disabled(!viewModel.canGoBack)
                         .opacity(viewModel.canGoBack ? 1.0 : 0.35)
-                        .frame(width: 28, height: 28)
+                        .frame(width: 26, height: 26)
                         .help("Back")
 
                         Button {
                             viewModel.goForward()
                         } label: {
                             Image(systemName: "chevron.forward")
-                                .font(.system(size: 13, weight: .semibold))
+                                .font(.system(size: 12, weight: .semibold))
                         }
                         .buttonStyle(.plain)
                         .disabled(!viewModel.canGoForward)
                         .opacity(viewModel.canGoForward ? 1.0 : 0.35)
-                        .frame(width: 28, height: 28)
+                        .frame(width: 26, height: 26)
                         .help("Forward")
 
                         Button {
@@ -52,60 +52,36 @@ struct StoreView: View {
                             }
                         } label: {
                             Image(systemName: viewModel.isLoading ? "xmark" : "arrow.clockwise")
-                                .font(.system(size: 12, weight: .medium))
+                                .font(.system(size: 11, weight: .medium))
                         }
                         .buttonStyle(.plain)
-                        .frame(width: 28, height: 28)
-                        .help(viewModel.isLoading ? "Stop Loading" : "Reload Page")
+                        .frame(width: 26, height: 26)
+                        .help(viewModel.isLoading ? "Stop Loading" : "Reload")
 
                         Button {
                             viewModel.goHome()
                         } label: {
                             Image(systemName: "house")
-                                .font(.system(size: 13, weight: .medium))
+                                .font(.system(size: 11, weight: .medium))
                         }
                         .buttonStyle(.plain)
-                        .frame(width: 28, height: 28)
+                        .frame(width: 26, height: 26)
                         .help("Chrome Web Store Home")
                     }
 
-                    // Address & Search Bar
-                    HStack(spacing: 6) {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
+                    Spacer()
 
-                        TextField("Search extensions or enter web address...", text: $viewModel.inputURLString)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 12))
-                            .onSubmit {
-                                viewModel.handleSubmit()
-                            }
+                    Text("Chrome Web Store")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.secondary)
 
-                        if !viewModel.inputURLString.isEmpty {
-                            Button {
-                                viewModel.inputURLString = ""
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.tertiary)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .fill(Color(nsColor: .controlBackgroundColor))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            .stroke(Color(nsColor: .separatorColor).opacity(0.5), lineWidth: 1)
-                    )
+                    Spacer()
+
+                    // Balance the left buttons so the title stays centered
+                    Color.clear.frame(width: 112, height: 26)
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+                .padding(.vertical, 6)
                 .background(Color(nsColor: .windowBackgroundColor))
 
                 // Loading Progress Bar
