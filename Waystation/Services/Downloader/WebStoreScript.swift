@@ -172,7 +172,32 @@ enum WebStoreScript {
             }
         }
 
+        // Global capture-phase click listener: guarantees immediate execution on the very first click
+        function handleInstallClick(e) {
+            const btn = e.target && e.target.closest ? e.target.closest('button, [role="button"]') : null;
+            if (!btn) return;
+
+            const text = (btn.textContent || '').trim().toLowerCase();
+            const matches = text.includes('add to safari') ||
+                            text.includes('add to chrome') ||
+                            text.includes('adaugă în chrome') ||
+                            text.includes('adăugați în chrome') ||
+                            btn.dataset.waystationRole === 'install';
+
+            if (matches) {
+                if (isThemePage()) return;
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                triggerSwiftInstall();
+            }
+        }
+
+        document.addEventListener('click', handleInstallClick, true);
+
         function setButtonText(btn, label) {
+            if (btn.textContent && btn.textContent.trim() === label) return;
+
             const descendants = btn.querySelectorAll('*');
             let textSet = false;
             for (const el of descendants) {
@@ -195,15 +220,24 @@ enum WebStoreScript {
         }
 
         function hideUnavailableBanners() {
-            // Only execute on detail pages to avoid touching catalog/discover views
             if (!window.location.pathname.includes('/detail/')) return;
 
-            // Find all elements containing "View guide", "Item currently unavailable", or "troubleshooting"
             const candidates = document.querySelectorAll('a, button, span, p, div');
             for (const el of candidates) {
+                // Focus on leaf elements
+                if (el.children.length > 2) continue;
+
                 const txt = (el.textContent || '').trim().toLowerCase();
-                if (txt === 'view guide' || txt === 'vezi ghidul' || txt.includes('view guide') || txt.includes('item currently unavailable') || txt.includes('troubleshooting guide')) {
-                    // Walk up to find the banner container (stopping before any ancestor that contains h1)
+                if (txt === 'view guide' ||
+                    txt === 'vezi ghidul' ||
+                    txt.includes('view guide') ||
+                    txt.includes('vezi ghidul') ||
+                    txt.includes('item currently unavailable') ||
+                    txt.includes('currently unavailable') ||
+                    txt.includes('troubleshooting guide') ||
+                    txt.includes('ghidul de remediere') ||
+                    txt.includes('nu este disponibil')) {
+
                     let box = el;
                     while (box && box.parentElement &&
                            !box.parentElement.querySelector('h1') &&
@@ -212,7 +246,6 @@ enum WebStoreScript {
                         box = box.parentElement;
                     }
 
-                    // If box doesn't contain h1, hide it completely
                     if (box && !box.querySelector('h1')) {
                         box.style.setProperty('display', 'none', 'important');
                         box.style.setProperty('height', '0px', 'important');
@@ -227,13 +260,11 @@ enum WebStoreScript {
         }
 
         function applyReplacements() {
-            // Check for themes URL and redirect
             if (window.location.pathname.includes('/category/themes')) {
                 window.location.replace('https://chromewebstore.google.com/category/extensions');
                 return;
             }
 
-            // Only perform button replacements and alert removal on extension detail pages
             if (!window.location.pathname.includes('/detail/')) {
                 return;
             }
@@ -242,18 +273,33 @@ enum WebStoreScript {
 
             const isTheme = isThemePage();
             const isInstalled = isCurrentExtensionInstalled();
+            const targetLabel = isTheme ? 'Themes Not Supported' : (isInstalled ? '✓ Installed' : 'Add to Safari');
 
-            // Find buttons on detail page
-            const buttons = document.querySelectorAll('button');
+            const buttons = document.querySelectorAll('button, [role="button"]');
             for (const btn of buttons) {
                 const text = (btn.textContent || '').trim().toLowerCase();
-                if (text.includes('add to chrome') || text.includes('add to safari') || text.includes('themes not supported') || text.includes('installed')) {
+                const matches = text.includes('add to chrome') ||
+                                text.includes('add to safari') ||
+                                text.includes('adaugă în chrome') ||
+                                text.includes('adăugați în chrome') ||
+                                text.includes('themes not supported') ||
+                                text.includes('installed');
+
+                if (matches) {
+                    btn.dataset.waystationRole = isTheme ? 'theme' : 'install';
+
+                    // Prevent endless DOM mutation loop if already styled
+                    if (btn.dataset.waystationAppliedLabel === targetLabel) {
+                        continue;
+                    }
+
                     if (isTheme) {
                         btn.setAttribute('disabled', 'true');
                         btn.style.setProperty('background-color', '#8e8e93', 'important');
                         btn.style.setProperty('cursor', 'not-allowed', 'important');
                         btn.style.setProperty('opacity', '0.6', 'important');
-                        setButtonText(btn, 'Themes Not Supported');
+                        setButtonText(btn, targetLabel);
+                        btn.dataset.waystationAppliedLabel = targetLabel;
                     } else {
                         btn.removeAttribute('disabled');
                         btn.removeAttribute('aria-disabled');
@@ -263,17 +309,8 @@ enum WebStoreScript {
                         btn.style.setProperty('opacity', '1.0', 'important');
                         btn.style.setProperty('pointer-events', 'auto', 'important');
 
-                        setButtonText(btn, isInstalled ? '✓ Installed' : 'Add to Safari');
-
-                        if (!btn.dataset.waystationBound) {
-                            btn.dataset.waystationBound = 'true';
-                            btn.addEventListener('click', function(e) {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                e.stopImmediatePropagation();
-                                triggerSwiftInstall();
-                            }, true);
-                        }
+                        setButtonText(btn, targetLabel);
+                        btn.dataset.waystationAppliedLabel = targetLabel;
                     }
                 }
             }
@@ -304,11 +341,11 @@ enum WebStoreScript {
             setTimeout(applyReplacements, 500);
         });
 
-        // Debounced MutationObserver to prevent excessive DOM inspection
+        // MutationObserver to catch SPA updates without triggering recursion loops
         let debounceTimer = null;
         const observer = new MutationObserver(() => {
             if (debounceTimer) clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(applyReplacements, 80);
+            debounceTimer = setTimeout(applyReplacements, 100);
         });
 
         observer.observe(document.documentElement, {
@@ -316,7 +353,6 @@ enum WebStoreScript {
             subtree: true
         });
 
-        // Run when ready
         applyReplacements();
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', applyReplacements);

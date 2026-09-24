@@ -190,14 +190,15 @@ final class StoreViewModel: Sendable {
 
     func handleAddToSafari(payload: StoreExtensionPayload) {
         self.selectedExtension = payload
-        Task {
-            let match = await findInstalledExtension(title: payload.title, extId: payload.extensionId)
-            self.installedMatch = match
-            self.showInstallConfirmation = true
-            if let match = match {
-                logDrawerViewModel?.append(line: "[Store] '\(payload.title)' is already installed in Library (v\(match.version)). Prompting user to reinstall/update.")
-            } else {
-                logDrawerViewModel?.append(line: "[Store] 'Add to Safari' clicked for '\(payload.title)' (ID: \(payload.extensionId))")
+        self.showInstallConfirmation = true
+        if let match = self.installedMatch {
+            logDrawerViewModel?.append(line: "[Store] '\(payload.title)' is already installed in Library (v\(match.version)). Prompting user to reinstall/update.")
+        } else {
+            logDrawerViewModel?.append(line: "[Store] 'Add to Safari' clicked for '\(payload.title)' (ID: \(payload.extensionId))")
+            Task {
+                if let match = await findInstalledExtension(title: payload.title, extId: payload.extensionId) {
+                    self.installedMatch = match
+                }
             }
         }
     }

@@ -29,7 +29,6 @@ public final class LibraryViewModel {
 
     // Lifecycle observers for real-time Safari process detection
     private var workspaceObservers: [NSObjectProtocol] = []
-    private var pollingTask: Task<Void, Never>?
 
     public init(
         registry: ExtensionRegistry = .shared,
@@ -45,9 +44,9 @@ public final class LibraryViewModel {
     public func startObservingSafariLifecycle() {
         guard workspaceObservers.isEmpty else { return }
 
-        let center = NSWorkspace.shared.notificationCenter
+        let wsCenter = NSWorkspace.shared.notificationCenter
 
-        let termObs = center.addObserver(
+        let termObs = wsCenter.addObserver(
             forName: NSWorkspace.didTerminateApplicationNotification,
             object: nil,
             queue: .main
@@ -59,7 +58,7 @@ public final class LibraryViewModel {
             }
         }
 
-        let launchObs = center.addObserver(
+        let launchObs = wsCenter.addObserver(
             forName: NSWorkspace.didLaunchApplicationNotification,
             object: nil,
             queue: .main
@@ -72,7 +71,7 @@ public final class LibraryViewModel {
             }
         }
 
-        let activateObs = center.addObserver(
+        let activateObs = wsCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil,
             queue: .main
@@ -84,27 +83,27 @@ public final class LibraryViewModel {
             }
         }
 
-        workspaceObservers = [termObs, launchObs, activateObs]
-
-        // Heartbeat poll every 3 seconds while on screen to guarantee real-time updates
-        pollingTask?.cancel()
-        pollingTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 3_000_000_000)
-                if Task.isCancelled { break }
+        let appFocusObs = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
                 await self?.checkSafariHealth()
             }
         }
+
+        workspaceObservers = [termObs, launchObs, activateObs, appFocusObs]
     }
 
     /// Cleans up observers when the view disappears.
     public func stopObservingSafariLifecycle() {
+        let wsCenter = NSWorkspace.shared.notificationCenter
         for obs in workspaceObservers {
-            NSWorkspace.shared.notificationCenter.removeObserver(obs)
+            wsCenter.removeObserver(obs)
+            NotificationCenter.default.removeObserver(obs)
         }
         workspaceObservers.removeAll()
-        pollingTask?.cancel()
-        pollingTask = nil
     }
 
     /// Filtered extensions matching the user's search query (Story 3.1).
