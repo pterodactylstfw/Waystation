@@ -6,10 +6,10 @@ import WebKit
 @Observable
 @MainActor
 final class StoreViewModel: Sendable {
-    static let homeURL = URL(string: "https://chromewebstore.google.com")!
+    static let homeURL = URL(string: "https://chromewebstore.google.com/category/extensions")!
     private static let detailRegex = try? NSRegularExpression(pattern: "/detail/(?:([^/]+)/)?([a-z]{32})")
 
-    var currentURLString: String = "https://chromewebstore.google.com"
+    var currentURLString: String = "https://chromewebstore.google.com/category/extensions"
     var inputURLString: String = ""
     var pageTitle: String = ""
     var canGoBack: Bool = false
@@ -95,6 +95,12 @@ final class StoreViewModel: Sendable {
 
     func updateState(url: URL?, title: String?, canGoBack: Bool, canGoForward: Bool, isLoading: Bool, progress: Double) {
         if let url = url {
+            // Guard against Themes category: auto-redirect back to Extensions
+            if url.path.contains("/category/themes") {
+                navigateTo(url: Self.homeURL)
+                return
+            }
+
             self.currentURLString = url.absoluteString
             if !self.isLoading || self.inputURLString.isEmpty {
                 self.inputURLString = url.absoluteString
@@ -115,6 +121,12 @@ final class StoreViewModel: Sendable {
 
     func checkForExtensionDetailPage(url: URL) {
         let path = url.path
+        // If this detail belongs to a Chrome Theme, ignore it because Safari cannot run themes
+        if path.lowercased().contains("/theme") || path.lowercased().contains("/themes") {
+            self.activeExtensionDetail = nil
+            return
+        }
+
         guard let regex = Self.detailRegex,
               let match = regex.firstMatch(in: path, range: NSRange(location: 0, length: path.utf16.count)),
               match.numberOfRanges >= 3,

@@ -4,15 +4,18 @@ import SwiftUI
 /// Conforms to Story 3.1, Story 3.2, and Story 3.3.
 public struct ExtensionRowView: View {
     public let ext: InstalledExtension
+    public let signatureStatus: SignatureVerificationResult?
     public let onReveal: () -> Void
     public let onUninstall: () -> Void
 
     public init(
         ext: InstalledExtension,
+        signatureStatus: SignatureVerificationResult? = nil,
         onReveal: @escaping () -> Void,
         onUninstall: @escaping () -> Void
     ) {
         self.ext = ext
+        self.signatureStatus = signatureStatus
         self.onReveal = onReveal
         self.onUninstall = onUninstall
     }
@@ -81,20 +84,70 @@ public struct ExtensionRowView: View {
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
 
-                    // 7-day expiration status badge
-                    HStack(spacing: 4) {
-                        Circle()
-                            .fill(ext.expirationStatus.badgeColor)
-                            .frame(width: 7, height: 7)
+                    if ext.expirationStatus == .expired {
+                        // Expired state: Clear and unified indication
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(Color.red)
+                                .frame(width: 7, height: 7)
 
-                        Text(badgeText)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(ext.expirationStatus.badgeColor)
+                            Text("Certificate Expired")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Color.red)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.red.opacity(0.12))
+                        .clipShape(Capsule())
+
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 10))
+                                .foregroundStyle(Color.orange)
+
+                            Text("Re-sign Required")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Color.orange)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.orange.opacity(0.12))
+                        .clipShape(Capsule())
+                        .help("The 7-day Apple developer certificate has expired. Click 'Re-sign All' to refresh it.")
+                    } else {
+                        // Active state: Days remaining
+                        HStack(spacing: 4) {
+                            Circle()
+                                .fill(ext.expirationStatus.badgeColor)
+                                .frame(width: 7, height: 7)
+
+                            Text(badgeText)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(ext.expirationStatus.badgeColor)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(ext.expirationStatus.badgeColor.opacity(0.12))
+                        .clipShape(Capsule())
+
+                        // Live signature integrity badge
+                        if let sig = signatureStatus {
+                            HStack(spacing: 4) {
+                                Image(systemName: sig.isValidOnDisk ? "checkmark.shield.fill" : "exclamationmark.shield.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(sig.isValidOnDisk ? Color.green : Color.red)
+
+                                Text(sig.isAdHoc ? "Ad-hoc" : (sig.isValidOnDisk ? "Verified" : "Corrupt"))
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(sig.isValidOnDisk ? Color.secondary : Color.red)
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background((sig.isValidOnDisk ? Color.secondary : Color.red).opacity(0.08))
+                            .clipShape(Capsule())
+                            .help(sig.statusMessage)
+                        }
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(ext.expirationStatus.badgeColor.opacity(0.12))
-                    .clipShape(Capsule())
                 }
                 .padding(.top, 2)
             }
@@ -141,7 +194,7 @@ public struct ExtensionRowView: View {
         case .warning:
             return "\(days) day\(days == 1 ? "" : "s") left"
         case .expired:
-            return "Expired"
+            return "Certificate Expired"
         }
     }
 }

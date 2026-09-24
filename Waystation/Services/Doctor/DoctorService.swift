@@ -11,8 +11,21 @@ public struct DoctorReport: Sendable, Equatable {
         isCommandLineToolsInstalled && isConverterAvailable
     }
 
+    public nonisolated var isXcodeAppPresent: Bool {
+        FileManager.default.fileExists(atPath: "/Applications/Xcode.app")
+    }
+
     public nonisolated var remediationCommand: String {
-        "xcode-select --install"
+        if !isCommandLineToolsInstalled {
+            return "xcode-select --install"
+        } else if !isConverterAvailable {
+            if isXcodeAppPresent {
+                return "sudo xcode-select -s /Applications/Xcode.app/Contents/Developer"
+            } else {
+                return "xcode-select --install"
+            }
+        }
+        return "xcode-select --install"
     }
 
     public nonisolated init(

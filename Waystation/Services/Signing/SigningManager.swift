@@ -1,5 +1,20 @@
 import Foundation
 
+/// Verification details for an installed extension's code signature.
+public struct SignatureVerificationResult: Sendable, Equatable {
+    public let isValidOnDisk: Bool
+    public let isAdHoc: Bool
+    public let authority: String?
+    public let statusMessage: String
+
+    public init(isValidOnDisk: Bool, isAdHoc: Bool, authority: String?, statusMessage: String) {
+        self.isValidOnDisk = isValidOnDisk
+        self.isAdHoc = isAdHoc
+        self.authority = authority
+        self.statusMessage = statusMessage
+    }
+}
+
 /// Service coordinating code signing and batch re-signing for installed extension container apps.
 /// Conforms strictly to AD-2 (isolated async process execution) and AD-6 (dual-track code signing strategy).
 public actor SigningManager {
@@ -106,7 +121,70 @@ public actor SigningManager {
         return nil
     }
 
+    /// Verifies the code signature integrity and authority of an installed container app bundle.
+    public func verifySignature(for targetURL: URL) async -> SignatureVerificationResult {
+        guard FileManager.default.fileExists(atPath: targetURL.path) else {
+            return SignatureVerificationResult(
+                isValidOnDisk: false,
+                isAdHoc: false,
+                authority: nil,
+                statusMessage: "Container bundle not found on disk"
+            )
+        }
+
+        // 1. Check validity with codesign --verify --verbose=2
+        let verifyResult = try? await processRunner.run(
+            command: "/usr/bin/codesign",
+            arguments: ["--verify", "--verbose=2", targetURL.path],
+            onOutputLine: nil
+        )
+
+        let isValid = verifyResult?.isSuccess ?? false
+
+        // 2. Inspect signature details with codesign -dvvv
+        let infoResult = try? await processRunner.run(
+            command: "/usr/bin/codesign",
+            arguments: ["-dvvv", targetURL.path],
+            onOutputLine: nil
+        )
+
+        let output = (infoResult?.standardError ?? "") + "\n" + (infoResult?.standardOutput ?? "")
+        let isAdHoc = output.contains("Signature=adhoc")
+
+        var authority: String?
+        for line in output.components(separatedBy: .newlines) {
+            if line.hasPrefix("Authority=Apple Development:") {
+                authority = line.replacingOccurrences(of: "Authority=", with: "")
+                break
+            } else if authority == nil && line.hasPrefix("Authority=") {
+                authority = line.replacingOccurrences(of: "Authority=", with: "")
+            }
+        }
+
+        let message: String
+        if isValid {
+            if isAdHoc {
+                message = "Valid (Ad-hoc signature)"
+            } else if let auth = authority {
+                message = "Valid (\(auth))"
+            } else {
+                message = "Signature verified and valid"
+            }
+        } else {
+            let errorDetail = verifyResult?.standardError.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            message = errorDetail.isEmpty ? "Signature invalid or modified" : errorDetail
+        }
+
+        return SignatureVerificationResult(
+            isValidOnDisk: isValid,
+            isAdHoc: isAdHoc,
+            authority: authority,
+            statusMessage: message
+        )
+    }
+
     /// Signs a container app bundle using the specified identity (or auto-detected).
+    /// Follows Apple's inside-out signing order: nested .appex bundles first, then container .app.
     public func sign(
         targetURL: URL,
         identity: String? = nil,
@@ -124,9 +202,30 @@ public actor SigningManager {
             throw WaystationError.signingFailed(reason: "Calea specificată nu există pe disc: \(targetURL.path)")
         }
 
+        // 1. Sign any nested .appex extension plugin bundles inside Contents/PlugIns/ first
+        let pluginsURL = targetURL.appendingPathComponent("Contents/PlugIns", isDirectory: true)
+        if let contents = try? FileManager.default.contentsOfDirectory(at: pluginsURL, includingPropertiesForKeys: nil) {
+            for item in contents where item.pathExtension == "appex" {
+                let appexArgs = [
+                    "--force",
+                    "--sign", resolvedIdentity,
+                    item.path
+                ]
+                let appexResult = try await processRunner.run(
+                    command: "/usr/bin/codesign",
+                    arguments: appexArgs,
+                    onOutputLine: onOutputLine
+                )
+                if !appexResult.isSuccess {
+                    let err = appexResult.standardError.isEmpty ? appexResult.standardOutput : appexResult.standardError
+                    onOutputLine?("[Signing] Warning signing nested plugin '\(item.lastPathComponent)': \(err.trimmingCharacters(in: .whitespacesAndNewlines))")
+                }
+            }
+        }
+
+        // 2. Sign the top-level container .app bundle
         let arguments = [
             "--force",
-            "--deep",
             "--sign", resolvedIdentity,
             targetURL.path
         ]

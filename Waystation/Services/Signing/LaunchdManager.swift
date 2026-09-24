@@ -35,6 +35,15 @@ public actor LaunchdManager {
         fileManager.fileExists(atPath: plistURL.path)
     }
 
+    /// Ensures the installed launchd plist points to the current active executable path.
+    /// Prevents silent failures if the user moves Waystation.app (e.g. from Downloads to /Applications).
+    public func ensureAgentUpToDate() async {
+        guard isAgentInstalled(), let executablePath = Bundle.main.executablePath else { return }
+        if let content = try? String(contentsOf: plistURL, encoding: .utf8), !content.contains(executablePath) {
+            await installAgent()
+        }
+    }
+
     /// Installs and loads the launchd agent to automatically re-sign extensions in the background.
     public func installAgent(intervalDays: Int = 5) async {
         guard let executablePath = Bundle.main.executablePath else { return }

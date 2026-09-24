@@ -43,6 +43,22 @@ public struct MainView: View {
             LogDrawerView(viewModel: appState.logDrawerViewModel)
         }
         .frame(minWidth: 900, minHeight: 620)
+        .toolbar {
+            ToolbarItem(placement: .automatic) {
+                Button {
+                    appState.showHelpGuide = true
+                } label: {
+                    Label("Help & Guide", systemImage: "questionmark.circle")
+                }
+                .help("Open Safari Setup & Persistence Guide (⌘/)")
+            }
+        }
+        .sheet(isPresented: $appState.showHelpGuide) {
+            HelpGuideView()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .showHelpGuide)) { _ in
+            appState.showHelpGuide = true
+        }
         .task {
             await appState.checkEnvironment()
         }

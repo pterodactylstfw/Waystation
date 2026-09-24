@@ -7,6 +7,7 @@ public struct ConverterService: Sendable {
 
     private let processRunner: ProcessRunner
     private let fileManager = FileManager.default
+    private let lsregisterPath = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
     public nonisolated init(processRunner: ProcessRunner = .shared) {
         self.processRunner = processRunner
@@ -133,11 +134,23 @@ public struct ConverterService: Sendable {
 
         let signingIdentity = await SigningManager.shared.detectSigningIdentity(onOutputLine: onOutputLine)
 
+        // Isolated temporary DerivedData directory to avoid polluting global Xcode cache
+        // and prevent Safari from discovering duplicate intermediate build artifacts.
+        let tempDerivedDataURL = fileManager.temporaryDirectory
+            .appendingPathComponent("WaystationBuild-\(UUID().uuidString)", isDirectory: true)
+        try? fileManager.createDirectory(at: tempDerivedDataURL, withIntermediateDirectories: true)
+
+        defer {
+            // Clean up temporary build directory when staging finishes
+            try? fileManager.removeItem(at: tempDerivedDataURL)
+        }
+
         let buildArgs = [
             "-project", projectURL.path,
             "-scheme", appName,
             "-destination", "platform=macOS",
             "-configuration", "Release",
+            "-derivedDataPath", tempDerivedDataURL.path,
             "CODE_SIGN_IDENTITY=\(signingIdentity)",
             "CODE_SIGN_STYLE=Manual",
             "-quiet",
@@ -166,16 +179,33 @@ public struct ConverterService: Sendable {
         try? fileManager.createDirectory(at: extensionsDir, withIntermediateDirectories: true)
         let destinationAppURL = extensionsDir.appendingPathComponent("\(appName).app")
 
-        // Locate built .app in DerivedData
-        let derivedDataBase = fileManager.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Developer/Xcode/DerivedData")
+        // 1. Locate built .app inside the isolated temporary build folder
+        let directAppURL = tempDerivedDataURL
+            .appendingPathComponent("Build/Products/Release/\(appName).app")
 
-        var foundAppURL: URL?
-        if let enumerator = fileManager.enumerator(at: derivedDataBase, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
-            while let fileURL = enumerator.nextObject() as? URL {
-                if fileURL.pathExtension == "app" && fileURL.lastPathComponent == "\(appName).app" {
-                    foundAppURL = fileURL
-                    break
+        var foundAppURL: URL? = fileManager.fileExists(atPath: directAppURL.path) ? directAppURL : nil
+
+        if foundAppURL == nil {
+            if let enumerator = fileManager.enumerator(at: tempDerivedDataURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+                while let fileURL = enumerator.nextObject() as? URL {
+                    if fileURL.pathExtension == "app" && fileURL.lastPathComponent == "\(appName).app" {
+                        foundAppURL = fileURL
+                        break
+                    }
+                }
+            }
+        }
+
+        // 2. Fallback: also check global DerivedData if something unexpected occurred
+        if foundAppURL == nil {
+            let derivedDataBase = fileManager.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Developer/Xcode/DerivedData")
+            if let enumerator = fileManager.enumerator(at: derivedDataBase, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+                while let fileURL = enumerator.nextObject() as? URL {
+                    if fileURL.pathExtension == "app" && fileURL.lastPathComponent == "\(appName).app" {
+                        foundAppURL = fileURL
+                        break
+                    }
                 }
             }
         }
@@ -186,6 +216,20 @@ public struct ConverterService: Sendable {
             }
             try fileManager.copyItem(at: builtApp, to: destinationAppURL)
             onOutputLine?("[Build] Staged container app to '\(destinationAppURL.path)'.")
+
+            // Unregister the intermediate build copy from LaunchServices so Safari does not show duplicates
+            _ = try? await processRunner.run(
+                command: lsregisterPath,
+                arguments: ["-u", builtApp.path],
+                onOutputLine: nil
+            )
+
+            // Force-register the final container app in Application Support
+            _ = try? await processRunner.run(
+                command: lsregisterPath,
+                arguments: ["-f", destinationAppURL.path],
+                onOutputLine: nil
+            )
 
             // Launch the container app to register the Safari extension
             _ = try? await processRunner.run(command: "/usr/bin/open", arguments: [destinationAppURL.path], onOutputLine: nil)
@@ -218,13 +262,13 @@ public struct ConverterService: Sendable {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " -_"))
         let filtered = raw.unicodeScalars.filter { allowed.contains($0) }
         let clean = String(String.UnicodeScalarView(filtered)).trimmingCharacters(in: .whitespaces)
-        return clean.isEmpty ? "SafariExtension" : clean
+        return clean.isEmpty ? "Safari Extension" : clean
     }
 
     private func sanitizeBundleID(_ raw: String) -> String {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".-_"))
-        let filtered = raw.replacingOccurrences(of: " ", with: "-").unicodeScalars.filter { allowed.contains($0) }
-        let clean = String(String.UnicodeScalarView(filtered)).trimmingCharacters(in: CharacterSet(charactersIn: ".-_"))
+        let filtered = raw.unicodeScalars.filter { allowed.contains($0) }
+        let clean = String(String.UnicodeScalarView(filtered)).lowercased()
         return clean.isEmpty ? "extension" : clean
     }
 }

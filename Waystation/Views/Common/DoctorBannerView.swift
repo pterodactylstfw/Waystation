@@ -34,7 +34,7 @@ public struct DoctorBannerView: View {
                     } label: {
                         HStack(spacing: 6) {
                             Image(systemName: appState.copiedCommandToast ? "checkmark" : "doc.on.doc")
-                            Text(appState.copiedCommandToast ? "Copied to Clipboard!" : "Copy 'xcode-select --install'")
+                            Text(appState.copiedCommandToast ? "Copied to Clipboard!" : "Copy '\(report.remediationCommand)'")
                         }
                         .fontWeight(.medium)
                     }
@@ -82,7 +82,11 @@ public struct DoctorBannerView: View {
         if !report.isCommandLineToolsInstalled {
             return "Waystation requires Xcode Command Line Tools to convert and build extensions for Safari."
         } else if !report.isConverterAvailable {
-            return "Xcode Command Line Tools are present, but 'safari-web-extension-converter' was not found in Xcode."
+            if report.isXcodeAppPresent {
+                return "Xcode is installed, but the active developer directory is not pointing to it. Run the switch command."
+            } else {
+                return "Full Xcode.app is required for Apple's 'safari-web-extension-converter'. Please install Xcode from Mac App Store."
+            }
         }
         return ""
     }

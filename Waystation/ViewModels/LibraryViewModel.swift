@@ -11,6 +11,14 @@ public final class LibraryViewModel: Sendable {
     public var isLoading: Bool = false
     public var errorMessage: String?
 
+    // Signature verification cache
+    public var signatureStatuses: [String: SignatureVerificationResult] = [:]
+    public var isVerifyingSignatures: Bool = false
+
+    // Safari health & integration status
+    public var safariStatus: SafariHealthStatus?
+    public var isCheckingSafari: Bool = false
+
     // Story 3.2: Re-signing state
     public var isResigningAll: Bool = false
     public var resigningExtensionName: String?
@@ -51,10 +59,58 @@ public final class LibraryViewModel: Sendable {
         do {
             let loaded = try await registry.loadAll()
             self.extensions = loaded.sorted { $0.installedDate > $1.installedDate }
+            Task {
+                await verifyAllSignatures()
+                await checkSafariHealth()
+            }
         } catch {
             self.errorMessage = "Nu s-au putut încărca extensiile: \(error.localizedDescription)"
         }
         isLoading = false
+    }
+
+    /// Asynchronously runs codesign verification on every installed extension.
+    public func verifyAllSignatures() async {
+        isVerifyingSignatures = true
+        var results: [String: SignatureVerificationResult] = [:]
+
+        for ext in extensions {
+            if let bundleURL = await signingManager.resolveAppBundle(for: ext) {
+                let verification = await signingManager.verifySignature(for: bundleURL)
+                results[ext.id] = verification
+            } else {
+                results[ext.id] = SignatureVerificationResult(
+                    isValidOnDisk: false,
+                    isAdHoc: false,
+                    authority: nil,
+                    statusMessage: "Bundle missing on disk"
+                )
+            }
+        }
+
+        self.signatureStatuses = results
+        self.isVerifyingSignatures = false
+    }
+
+    /// Checks Safari's running state, Develop menu, and "Allow Unsigned Extensions" toggle.
+    public func checkSafariHealth() async {
+        isCheckingSafari = true
+        let status = await SafariAutomationService.shared.checkSafariHealth()
+        self.safariStatus = status
+        self.isCheckingSafari = false
+    }
+
+    /// Requests automated toggle of "Allow Unsigned Extensions" in Safari.
+    public func toggleSafariUnsignedExtensions() async {
+        let success = await SafariAutomationService.shared.toggleAllowUnsignedExtensions { [weak self] line in
+            Task { @MainActor in
+                self?.logDrawerViewModel?.append(line: line)
+            }
+        }
+        if success {
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            await checkSafariHealth()
+        }
     }
 
     /// Re-signs all installed extensions in batch and resets their expiration countdowns to 7 days (Story 3.2).
@@ -83,6 +139,7 @@ public final class LibraryViewModel: Sendable {
             self.isResigningAll = false
             self.resigningExtensionName = nil
             self.logDrawerViewModel?.isStreaming = false
+            await verifyAllSignatures()
         } catch {
             logDrawerViewModel?.append(line: "[Signing] Batch re-signing error: \(error.localizedDescription)")
             self.errorMessage = "Eșec la re-semnare: \(error.localizedDescription)"
@@ -117,8 +174,11 @@ public final class LibraryViewModel: Sendable {
 
         logDrawerViewModel?.append(line: "[Uninstall] Removing '\(ext.name)'...")
 
-        // 1. Delete .app bundle from disk
+        // 1. Unregister from LaunchServices and delete .app bundle from disk
         let appURL = ext.containerAppURL
+        let lsregisterPath = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+        _ = try? await ProcessRunner.shared.run(command: lsregisterPath, arguments: ["-u", appURL.path])
+
         if FileManager.default.fileExists(atPath: appURL.path) {
             do {
                 try FileManager.default.removeItem(at: appURL)

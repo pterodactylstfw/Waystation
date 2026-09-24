@@ -8,7 +8,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func setupIcons() {
         let icon = NSImage(named: "AppIcon")
-            ?? NSImage(contentsOfFile: "/Users/raulconstantin/Projects/Waystation/AppIcon_transparent.png")
             ?? Bundle.main.url(forResource: "AppIcon", withExtension: "icns").flatMap { NSImage(contentsOf: $0) }
 
         if let icon = icon {
@@ -26,12 +25,9 @@ struct MyApp: App {
     @State private var settings = AppSettings.shared
 
     init() {
-        // Guarantee the custom Dock icon displays with transparent squircle background
-        if let transparentIcon = NSImage(contentsOfFile: "/Users/raulconstantin/Projects/Waystation/AppIcon_transparent.png") {
-            NSApplication.shared.applicationIconImage = transparentIcon
-        } else if let iconURL = Bundle.main.url(forResource: "AppIcon", withExtension: "icns"),
-                  let image = NSImage(contentsOf: iconURL) {
-            NSApplication.shared.applicationIconImage = image
+        if let icon = NSImage(named: "AppIcon")
+            ?? Bundle.main.url(forResource: "AppIcon", withExtension: "icns").flatMap({ NSImage(contentsOf: $0) }) {
+            NSApplication.shared.applicationIconImage = icon
         }
 
         // Handle background launchd invocation for silent auto-re-signing
@@ -47,6 +43,11 @@ struct MyApp: App {
                     print("[Waystation Daemon] Auto-resign failed: \(error.localizedDescription)")
                 }
                 exit(0)
+            }
+        } else {
+            // Keep background launch agent path synced if app was moved
+            Task {
+                await LaunchdManager.shared.ensureAgentUpToDate()
             }
         }
     }
@@ -75,6 +76,13 @@ struct MyApp: App {
                     }
                 }
                 .keyboardShortcut("r", modifiers: [.command])
+            }
+
+            CommandGroup(replacing: .help) {
+                Button("Waystation Guide & Setup") {
+                    NotificationCenter.default.post(name: .showHelpGuide, object: nil)
+                }
+                .keyboardShortcut("/", modifiers: [.command])
             }
         }
 

@@ -17,6 +17,10 @@ public enum AppTab: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+public extension Notification.Name {
+    static let showHelpGuide = Notification.Name("WaystationShowHelpGuide")
+}
+
 /// Central application state coordinator conforming to AD-1.
 /// Managed on `@MainActor` with `@Observable` macros (no Combine).
 @Observable
@@ -26,6 +30,7 @@ public final class AppState {
     public var doctorReport: DoctorReport?
     public var isCheckingDoctor: Bool = false
     public var copiedCommandToast: Bool = false
+    public var showHelpGuide: Bool = false
 
     public var logDrawerViewModel: LogDrawerViewModel
     public var dropZoneViewModel: DropZoneViewModel
@@ -67,10 +72,11 @@ public final class AppState {
         self.isCheckingDoctor = false
     }
 
-    /// Copies 'xcode-select --install' to macOS pasteboard as required by Story 1.1.
+    /// Copies remediation command to macOS pasteboard as required by Story 1.1.
     public func copyCLTInstallCommand() {
+        let command = doctorReport?.remediationCommand ?? "xcode-select --install"
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString("xcode-select --install", forType: .string)
+        NSPasteboard.general.setString(command, forType: .string)
         withAnimation {
             copiedCommandToast = true
         }

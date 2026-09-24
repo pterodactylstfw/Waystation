@@ -2,7 +2,7 @@ import Foundation
 
 /// Provides the JavaScript source injected into Chrome Web Store pages to replace
 /// the "Add to Chrome" button with a native-styled "Add to Safari" button,
-/// hide browser incompatibility warning banners, and communicate with Swift.
+/// hide browser incompatibility warning banners, hide unsupported Themes tabs, and communicate with Swift.
 enum WebStoreScript {
     static let scriptSource: String = """
     (function() {
@@ -11,9 +11,63 @@ enum WebStoreScript {
 
         const EXTENSION_ID_REGEX = /[a-z]{32}/;
 
+        // Auto-redirect away from Themes catalog to Extensions catalog
+        if (window.location.pathname.includes('/category/themes')) {
+            window.location.replace('https://chromewebstore.google.com/category/extensions');
+            return;
+        }
+
+        // Inject global CSS rule to permanently hide Themes navigation tabs, links, and sections
+        const styleId = 'waystation-clean-styles';
+        if (!document.getElementById(styleId)) {
+            const style = document.createElement('style');
+            style.id = styleId;
+            style.textContent = `
+                a[href*="/category/themes"],
+                a[href*="category/themes"],
+                [role="tab"]:has(a[href*="/category/themes"]),
+                [role="tab"]:has(a[href*="category/themes"]),
+                li:has(a[href*="/category/themes"]),
+                li:has(a[href*="category/themes"]),
+                div:has(> a[href*="/category/themes"]) {
+                    display: none !important;
+                    visibility: hidden !important;
+                    pointer-events: none !important;
+                    width: 0 !important;
+                    height: 0 !important;
+                    margin: 0 !important;
+                    padding: 0 !important;
+                    overflow: hidden !important;
+                }
+            `;
+            if (document.head) {
+                document.head.appendChild(style);
+            } else {
+                document.addEventListener('DOMContentLoaded', () => {
+                    if (document.head && !document.getElementById(styleId)) {
+                        document.head.appendChild(style);
+                    }
+                });
+            }
+        }
+
         function getExtensionId() {
             const match = window.location.pathname.match(EXTENSION_ID_REGEX);
             return match ? match[0] : null;
+        }
+
+        function isThemePage() {
+            // Check if page or breadcrumbs indicate this is a theme
+            const path = window.location.pathname.toLowerCase();
+            if (path.includes('/themes') || path.includes('/theme/')) return true;
+            
+            const breadcrumbs = document.querySelectorAll('a, span');
+            for (const b of breadcrumbs) {
+                if ((b.textContent || '').trim().toLowerCase() === 'themes') {
+                    return true;
+                }
+            }
+            return false;
         }
 
         function getExtensionTitle() {
@@ -47,6 +101,7 @@ enum WebStoreScript {
         }
 
         function triggerSwiftInstall() {
+            if (isThemePage()) return;
             const extensionId = getExtensionId();
             if (!extensionId) return;
             const title = getExtensionTitle();
@@ -60,7 +115,24 @@ enum WebStoreScript {
         }
 
         function applyReplacements() {
-            // 1. Hide Google's "Item currently unavailable" warning banner safely without affecting page content
+            // Check for themes URL and redirect
+            if (window.location.pathname.includes('/category/themes')) {
+                window.location.replace('https://chromewebstore.google.com/category/extensions');
+                return;
+            }
+
+            // 1. Hide Themes tab links and parent elements
+            const themeLinks = document.querySelectorAll('a[href*="/category/themes"], a[href*="category/themes"]');
+            for (const link of themeLinks) {
+                let container = link.closest('li, [role="tab"], div[role="tab"], div.mUIrbf, div.VfPpkd-dgl27d');
+                if (container) {
+                    container.style.setProperty('display', 'none', 'important');
+                } else {
+                    link.style.setProperty('display', 'none', 'important');
+                }
+            }
+
+            // 2. Hide Google's "Item currently unavailable" warning banner safely without affecting page content
             const allElements = document.querySelectorAll('div, section');
             for (const el of allElements) {
                 if (el.textContent && el.textContent.includes('Item currently unavailable') && !el.querySelector('h1')) {
@@ -89,31 +161,44 @@ enum WebStoreScript {
                 alertI3.style.setProperty('padding', '0px', 'important');
             }
 
-            // 2. Find the "Add to Chrome" button & text span
+            const isTheme = isThemePage();
+
+            // 3. Find the "Add to Chrome" button & text span
             const spans = document.querySelectorAll('span.UywwFc-vQzf8d, span');
             for (const span of spans) {
                 const text = (span.textContent || '').trim().toLowerCase();
-                if (text === 'add to chrome' || text === 'add to safari') {
-                    span.textContent = 'Add to Safari';
+                if (text === 'add to chrome' || text === 'add to safari' || text === 'themes not supported') {
+                    if (isTheme) {
+                        span.textContent = 'Themes Not Supported';
+                        const btn = span.closest('button');
+                        if (btn) {
+                            btn.setAttribute('disabled', 'true');
+                            btn.style.setProperty('background-color', '#8e8e93', 'important');
+                            btn.style.setProperty('cursor', 'not-allowed', 'important');
+                            btn.style.setProperty('opacity', '0.6', 'important');
+                        }
+                    } else {
+                        span.textContent = 'Add to Safari';
 
-                    const btn = span.closest('button');
-                    if (btn) {
-                        btn.removeAttribute('disabled');
-                        btn.removeAttribute('aria-disabled');
-                        btn.style.setProperty('background-color', '#0071e3', 'important');
-                        btn.style.setProperty('color', '#ffffff', 'important');
-                        btn.style.setProperty('cursor', 'pointer', 'important');
-                        btn.style.setProperty('opacity', '1.0', 'important');
-                        btn.style.setProperty('pointer-events', 'auto', 'important');
+                        const btn = span.closest('button');
+                        if (btn) {
+                            btn.removeAttribute('disabled');
+                            btn.removeAttribute('aria-disabled');
+                            btn.style.setProperty('background-color', '#0071e3', 'important');
+                            btn.style.setProperty('color', '#ffffff', 'important');
+                            btn.style.setProperty('cursor', 'pointer', 'important');
+                            btn.style.setProperty('opacity', '1.0', 'important');
+                            btn.style.setProperty('pointer-events', 'auto', 'important');
 
-                        if (!btn.dataset.waystationBound) {
-                            btn.dataset.waystationBound = 'true';
-                            btn.addEventListener('click', function(e) {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                e.stopImmediatePropagation();
-                                triggerSwiftInstall();
-                            }, true);
+                            if (!btn.dataset.waystationBound) {
+                                btn.dataset.waystationBound = 'true';
+                                btn.addEventListener('click', function(e) {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    e.stopImmediatePropagation();
+                                    triggerSwiftInstall();
+                                }, true);
+                            }
                         }
                     }
                 }
@@ -124,28 +209,40 @@ enum WebStoreScript {
             for (const btn of buttons) {
                 const text = (btn.textContent || '').trim().toLowerCase();
                 if (text.includes('add to chrome')) {
-                    btn.removeAttribute('disabled');
-                    btn.removeAttribute('aria-disabled');
-                    btn.style.setProperty('background-color', '#0071e3', 'important');
-                    btn.style.setProperty('color', '#ffffff', 'important');
-                    btn.style.setProperty('cursor', 'pointer', 'important');
-                    btn.style.setProperty('opacity', '1.0', 'important');
-                    btn.style.setProperty('pointer-events', 'auto', 'important');
-
-                    for (const node of btn.childNodes) {
-                        if (node.nodeType === 3 && node.textContent.includes('Add to Chrome')) {
-                            node.textContent = 'Add to Safari';
+                    if (isTheme) {
+                        btn.setAttribute('disabled', 'true');
+                        btn.style.setProperty('background-color', '#8e8e93', 'important');
+                        btn.style.setProperty('cursor', 'not-allowed', 'important');
+                        btn.style.setProperty('opacity', '0.6', 'important');
+                        for (const node of btn.childNodes) {
+                            if (node.nodeType === 3 && node.textContent.includes('Add to Chrome')) {
+                                node.textContent = 'Themes Not Supported';
+                            }
                         }
-                    }
+                    } else {
+                        btn.removeAttribute('disabled');
+                        btn.removeAttribute('aria-disabled');
+                        btn.style.setProperty('background-color', '#0071e3', 'important');
+                        btn.style.setProperty('color', '#ffffff', 'important');
+                        btn.style.setProperty('cursor', 'pointer', 'important');
+                        btn.style.setProperty('opacity', '1.0', 'important');
+                        btn.style.setProperty('pointer-events', 'auto', 'important');
 
-                    if (!btn.dataset.waystationBound) {
-                        btn.dataset.waystationBound = 'true';
-                        btn.addEventListener('click', function(e) {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            e.stopImmediatePropagation();
-                            triggerSwiftInstall();
-                        }, true);
+                        for (const node of btn.childNodes) {
+                            if (node.nodeType === 3 && node.textContent.includes('Add to Chrome')) {
+                                node.textContent = 'Add to Safari';
+                            }
+                        }
+
+                        if (!btn.dataset.waystationBound) {
+                            btn.dataset.waystationBound = 'true';
+                            btn.addEventListener('click', function(e) {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                e.stopImmediatePropagation();
+                                triggerSwiftInstall();
+                            }, true);
+                        }
                     }
                 }
             }
