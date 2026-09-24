@@ -47,7 +47,11 @@ public struct LibraryView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task {
+            viewModel.startObservingSafariLifecycle()
             await viewModel.loadExtensions()
+        }
+        .onDisappear {
+            viewModel.stopObservingSafariLifecycle()
         }
         .confirmationDialog(
             "Uninstall \(viewModel.extensionToUninstall?.name ?? "Extension")?",

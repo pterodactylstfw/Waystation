@@ -1,8 +1,7 @@
 import Foundation
 import AppKit
-import ApplicationServices
 
-/// Real-time activation status of Safari's "Allow Unsigned Extensions" developer setting.
+/// Status of the Safari "Allow Unsigned Extensions" developer setting.
 public enum SafariUnsignedStatus: Sendable, Equatable {
     case enabled
     case disabled
@@ -10,21 +9,6 @@ public enum SafariUnsignedStatus: Sendable, Equatable {
     case developMenuMissing
     case accessibilityRequired
     case unknown(String)
-
-    nonisolated public var title: String {
-        switch self {
-        case .enabled: return "Unsigned Extensions: Active"
-        case .disabled: return "Unsigned Extensions: Disabled"
-        case .safariNotRunning: return "Safari is closed"
-        case .developMenuMissing: return "Develop Menu Disabled in Safari"
-        case .accessibilityRequired: return "Accessibility Permission Required"
-        case .unknown(let msg): return msg
-        }
-    }
-
-    nonisolated public var isOperational: Bool {
-        self == .enabled
-    }
 
     nonisolated public static func == (lhs: SafariUnsignedStatus, rhs: SafariUnsignedStatus) -> Bool {
         switch (lhs, rhs) {
@@ -69,6 +53,7 @@ public actor SafariAutomationService {
 
     private let processRunner: ProcessRunner
     private let registry: ExtensionRegistry
+    private let lsregisterPath = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
     /// Cached session state: remember if enabled for current Safari process without flashing UI windows.
     private var lastKnownSafariPID: pid_t?
@@ -97,121 +82,152 @@ public actor SafariAutomationService {
         NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Safari").first?.processIdentifier
     }
 
-    /// Requests macOS Accessibility permissions by opening the system authorization prompt.
-    nonisolated public func requestAccessibilityPermission() {
-        let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-        let options = [key: true] as CFDictionary
-        _ = AXIsProcessTrustedWithOptions(options)
+    /// Prompts the macOS system prompt to request Accessibility permissions for Waystation.
+    nonisolated public func requestAccessibilityPrompt() {
+        let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+        AXIsProcessTrustedWithOptions(options)
     }
 
-    /// Silently diagnoses Safari's current runtime status WITHOUT flashing or opening background windows.
-    public func checkSafariHealth() async -> SafariHealthStatus {
-        guard let currentPID = currentSafariPID() else {
-            // Safari is closed: reset session cache
-            self.lastKnownSafariPID = nil
-            self.cachedUnsignedEnabledForSession = false
-            return SafariHealthStatus(isSafariRunning: false, unsignedStatus: .safariNotRunning, hasAccessibility: isAccessibilityGranted())
+    nonisolated public func requestAccessibilityPermission() {
+        requestAccessibilityPrompt()
+    }
+
+    /// Evaluates current Safari extension readiness and unsigned extensions toggle state.
+    public func checkSafariHealth(forceFreshCheck: Bool = false) async -> SafariHealthStatus {
+        await checkHealth(forceFreshCheck: forceFreshCheck)
+    }
+
+    public func checkHealth(forceFreshCheck: Bool = false) async -> SafariHealthStatus {
+        guard isSafariRunning() else {
+            return SafariHealthStatus(
+                isSafariRunning: false,
+                unsignedStatus: .safariNotRunning,
+                hasAccessibility: isAccessibilityGranted()
+            )
         }
 
-        // If Safari was restarted (new PID), reset session cache
-        if let lastPID = lastKnownSafariPID, lastPID != currentPID {
-            self.cachedUnsignedEnabledForSession = false
-        }
-        self.lastKnownSafariPID = currentPID
-
-        let accessibility = isAccessibilityGranted()
-        guard accessibility else {
-            return SafariHealthStatus(isSafariRunning: true, unsignedStatus: .accessibilityRequired, hasAccessibility: false)
-        }
-
-        // If already verified active during this Safari session, return enabled immediately without touching GUI
-        if cachedUnsignedEnabledForSession {
-            return SafariHealthStatus(isSafariRunning: true, unsignedStatus: .enabled, hasAccessibility: true)
+        let currentPID = currentSafariPID()
+        if !forceFreshCheck,
+           let currentPID = currentPID,
+           let lastPID = lastKnownSafariPID,
+           currentPID == lastPID,
+           cachedUnsignedEnabledForSession {
+            return SafariHealthStatus(
+                isSafariRunning: true,
+                unsignedStatus: .enabled,
+                hasAccessibility: isAccessibilityGranted()
+            )
         }
 
-        // Passive inspection: Never force-open Developer Settings unless the window is already open
+        guard isAccessibilityGranted() else {
+            return SafariHealthStatus(
+                isSafariRunning: true,
+                unsignedStatus: .accessibilityRequired,
+                hasAccessibility: false
+            )
+        }
+
+        let unsignedStatus = await inspectSafariUnsignedSetting()
+        if case .enabled = unsignedStatus {
+            self.cachedUnsignedEnabledForSession = true
+            self.lastKnownSafariPID = currentPID
+        }
+
+        return SafariHealthStatus(
+            isSafariRunning: true,
+            unsignedStatus: unsignedStatus,
+            hasAccessibility: true
+        )
+    }
+
+    /// Queries Safari's UI hierarchy via AppleScript to read the Allow Unsigned Extensions checkbox state.
+    private func inspectSafariUnsignedSetting() async -> SafariUnsignedStatus {
         let script = """
         tell application "System Events"
-            if not (exists (processes whose bundle identifier is "com.apple.Safari")) then
-                return "safari_not_running"
-            end if
+            if not (exists process "Safari") then return "NOT_RUNNING"
             tell (first process whose bundle identifier is "com.apple.Safari")
-                -- 1. Check if Develop menu bar exists
+                -- Check if Develop menu exists
                 if not (exists menu bar item "Develop" of menu bar 1) then
-                    return "develop_menu_missing"
+                    return "DEVELOP_MENU_MISSING"
                 end if
 
-                -- 2. If Developer window is ALREADY open, read it passively without opening or closing
+                -- Check Developer settings window if open
                 if exists window "Developer" then
                     tell window "Developer"
                         try
                             set chk to checkbox "Allow unsigned extensions" of group 1 of group 1
-                            if value of chk is 1 then
-                                return "enabled"
-                            else
-                                return "disabled"
-                            end if
+                            if (value of chk is 1) then return "ENABLED"
+                            return "DISABLED"
                         end try
                     end tell
                 end if
 
-                -- 3. Fallback: Safari 16 legacy Develop menu item check
+                -- Check Develop menu item directly (Safari 16 and older fallback)
                 try
                     set devMenu to menu "Develop" of menu bar item "Develop" of menu bar 1
                     if exists menu item "Allow Unsigned Extensions" of devMenu then
-                        set allowItem to menu item "Allow Unsigned Extensions" of devMenu
-                        set isMarked to (value of attribute "AXMenuItemMarkChar" of allowItem is not "")
-                        if isMarked then
-                            return "enabled"
+                        set mItem to menu item "Allow Unsigned Extensions" of devMenu
+                        set mValue to value of attribute "AXMenuItemMarkChar" of mItem
+                        if mValue is "✓" or mValue is true or mValue is 1 then
+                            return "ENABLED"
                         else
-                            return "disabled"
+                            return "DISABLED"
                         end if
                     end if
                 end try
 
-                -- 4. Develop menu is present, but window "Developer" not open
-                return "develop_menu_ready"
+                return "CANNOT_INSPECT_SILENTLY"
             end tell
         end tell
         """
 
         do {
-            let result = try await processRunner.run(command: "/usr/bin/osascript", arguments: ["-e", script], onOutputLine: nil)
-            let trimmed = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+            let result = try await processRunner.run(
+                command: "/usr/bin/osascript",
+                arguments: ["-e", script],
+                onOutputLine: nil
+            )
 
-            let status: SafariUnsignedStatus
-            switch trimmed {
-            case "enabled":
-                self.cachedUnsignedEnabledForSession = true
-                status = .enabled
-            case "disabled":
-                self.cachedUnsignedEnabledForSession = false
-                status = .disabled
-            case "safari_not_running":
-                self.cachedUnsignedEnabledForSession = false
-                status = .safariNotRunning
-            case "develop_menu_missing":
-                status = .developMenuMissing
-            case "develop_menu_ready":
-                // Apple unchecks "Allow Unsigned Extensions" on every Safari restart/quit.
-                // If not yet verified or enabled in this session, it defaults to disabled.
-                if self.cachedUnsignedEnabledForSession {
-                    status = .enabled
-                } else {
-                    status = .disabled
-                }
+            let output = result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+            switch output {
+            case "NOT_RUNNING":
+                return .safariNotRunning
+            case "DEVELOP_MENU_MISSING":
+                return .developMenuMissing
+            case "ENABLED":
+                return .enabled
+            case "DISABLED":
+                return .disabled
             default:
-                status = .unknown(trimmed.isEmpty ? "Could not verify" : trimmed)
+                return .disabled
             }
-
-            return SafariHealthStatus(isSafariRunning: true, unsignedStatus: status, hasAccessibility: true)
         } catch {
-            return SafariHealthStatus(isSafariRunning: true, unsignedStatus: .unknown(error.localizedDescription), hasAccessibility: true)
+            return .disabled
         }
     }
 
-    /// Brings Safari forward and opens Developer Settings pane intentionally on user demand.
-    public func openDeveloperSettings(onOutputLine: (@Sendable (String) -> Void)? = nil) async {
+    /// Opens Safari Settings directly to Developer or Extensions tab.
+    public func openSafariExtensionSettings(onOutputLine: (@Sendable (String) -> Void)? = nil) async {
+        let script = """
+        tell application "Safari" to activate
+        tell application "System Events"
+            tell (first process whose bundle identifier is "com.apple.Safari")
+                set frontmost to true
+                try
+                    click menu item "Settings…" of menu "Safari" of menu bar item "Safari" of menu bar 1
+                on error
+                    try
+                        click menu item "Preferences…" of menu "Safari" of menu bar item "Safari" of menu bar 1
+                    end try
+                end try
+            end tell
+        end tell
+        """
+        _ = try? await processRunner.run(command: "/usr/bin/osascript", arguments: ["-e", script], onOutputLine: onOutputLine)
+    }
+
+    /// Opens Safari Developer Settings specifically to toggle Allow Unsigned Extensions.
+    public func openSafariDeveloperSettings(onOutputLine: (@Sendable (String) -> Void)? = nil) async {
         let script = """
         tell application "Safari" to activate
         tell application "System Events"
@@ -228,16 +244,35 @@ public actor SafariAutomationService {
         _ = try? await processRunner.run(command: "/usr/bin/osascript", arguments: ["-e", script], onOutputLine: onOutputLine)
     }
 
-    /// Pre-registers all installed extension container apps with macOS LaunchServices.
+    public func openDeveloperSettings(onOutputLine: (@Sendable (String) -> Void)? = nil) async {
+        await openSafariDeveloperSettings(onOutputLine: onOutputLine)
+    }
+
+    /// Registers all installed container apps with macOS LaunchServices and PlugInKit so Safari extension manager detects them without opening any app windows.
     public func registerAllContainers(onOutputLine: (@Sendable (String) -> Void)? = nil) async {
         do {
             let extensions = try await registry.loadAll()
             for ext in extensions {
-                let path = ext.containerAppPath
-                if FileManager.default.fileExists(atPath: path) {
-                    onOutputLine?("[Safari] Registering '\(ext.name)' container with macOS LaunchServices...")
-                    _ = try? await processRunner.run(command: "/usr/bin/open", arguments: ["-g", path], onOutputLine: nil)
+                let appURL = ext.containerAppURL
+                guard FileManager.default.fileExists(atPath: appURL.path) else { continue }
+
+                // 1. Register silently with LaunchServices database
+                let args = ["-f", appURL.path]
+                _ = try? await processRunner.run(command: lsregisterPath, arguments: args, onOutputLine: nil)
+
+                // 2. Register extension plugin(s) directly with PlugInKit
+                let pluginsDir = appURL.appendingPathComponent("Contents/PlugIns")
+                if let plugins = try? FileManager.default.contentsOfDirectory(at: pluginsDir, includingPropertiesForKeys: nil) {
+                    for plugin in plugins where plugin.pathExtension == "appex" {
+                        _ = try? await processRunner.run(
+                            command: "/usr/bin/pluginkit",
+                            arguments: ["-a", plugin.path],
+                            onOutputLine: nil
+                        )
+                    }
                 }
+
+                onOutputLine?("[Safari] Registered extension bundle: '\(ext.name)'")
             }
         } catch {
             onOutputLine?("[Safari] Note: Registry check failed: \(error.localizedDescription)")
@@ -251,7 +286,7 @@ public actor SafariAutomationService {
     ) async {
         onOutputLine?("[Safari] Preparing installed extensions for Safari session...")
 
-        // 1. Register container apps
+        // 1. Register container apps silently via LaunchServices & PlugInKit (no windows)
         await registerAllContainers(onOutputLine: onOutputLine)
 
         // 2. Launch or activate Safari

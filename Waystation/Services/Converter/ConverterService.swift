@@ -221,7 +221,7 @@ public struct ConverterService: Sendable {
         if foundAppURL == nil {
             let derivedDataBase = fileManager.homeDirectoryForCurrentUser
                 .appendingPathComponent("Library/Developer/Xcode/DerivedData")
-            if let enumerator = fileManager.enumerator(at: derivedDataBase, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
+            if let enumerator = fileManager.enumerator(at: derivedDataBase, includingPropertiesForKeys: nil) {
                 while let fileURL = enumerator.nextObject() as? URL {
                     if fileURL.pathExtension == "app" && fileURL.lastPathComponent == "\(appName).app" {
                         foundAppURL = fileURL
@@ -238,6 +238,17 @@ public struct ConverterService: Sendable {
             try fileManager.copyItem(at: builtApp, to: destinationAppURL)
             onOutputLine?("[Build] Staged container app to '\(destinationAppURL.path)'.")
 
+            // Re-sign with mandatory app-sandbox entitlement so PlugInKit and Safari accept the plugin
+            do {
+                try await SigningManager.shared.sign(
+                    targetURL: destinationAppURL,
+                    identity: signingIdentity,
+                    onOutputLine: onOutputLine
+                )
+            } catch {
+                onOutputLine?("[Signing] Warning re-signing container: \(error.localizedDescription)")
+            }
+
             // Unregister the intermediate build copy from LaunchServices so Safari does not show duplicates
             _ = try? await processRunner.run(
                 command: lsregisterPath,
@@ -252,13 +263,25 @@ public struct ConverterService: Sendable {
                 onOutputLine: nil
             )
 
-            // Auto-launch container app once if setting enabled, so Safari registers extension immediately (AD-1)
+            // Register extension plugin(s) with PlugInKit
+            let pluginsDir = destinationAppURL.appendingPathComponent("Contents/PlugIns")
+            if let plugins = try? fileManager.contentsOfDirectory(at: pluginsDir, includingPropertiesForKeys: nil) {
+                for plugin in plugins where plugin.pathExtension == "appex" {
+                    _ = try? await processRunner.run(
+                        command: "/usr/bin/pluginkit",
+                        arguments: ["-a", plugin.path],
+                        onOutputLine: nil
+                    )
+                }
+            }
+
+            // Auto-launch Safari once if setting enabled (AD-1)
             let shouldAutoLaunch = await AppSettings.shared.autoOpenSafariOnInstall
             if shouldAutoLaunch {
-                onOutputLine?("[Build] Auto-registering extension container with macOS...")
+                onOutputLine?("[Build] Launching Safari...")
                 _ = try? await processRunner.run(
                     command: "/usr/bin/open",
-                    arguments: ["-g", destinationAppURL.path],
+                    arguments: ["-a", "Safari"],
                     onOutputLine: nil
                 )
             }

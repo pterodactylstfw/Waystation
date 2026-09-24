@@ -145,7 +145,30 @@ public actor SigningManager {
         }
     }
 
-    /// Recursively signs an application bundle with the given identity.
+    /// Creates a temporary entitlements file containing the mandatory macOS App Sandbox entitlement.
+    /// PlugInKit rejects all plug-ins without this entitlement ("plug-ins must be sandboxed").
+    private func createSandboxEntitlementsFile() -> URL? {
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("waystation-sandbox-\(UUID().uuidString).entitlements")
+        let content = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>com.apple.security.app-sandbox</key>
+            <true/>
+        </dict>
+        </plist>
+        """
+        do {
+            try content.write(to: tempURL, atomically: true, encoding: .utf8)
+            return tempURL
+        } catch {
+            return nil
+        }
+    }
+
+    /// Recursively signs an application bundle with the given identity and mandatory App Sandbox entitlement.
     /// Conforms to AD-6: signs embedded .appex bundles first, followed by the main container .app.
     public func sign(
         targetURL: URL,
@@ -164,15 +187,26 @@ public actor SigningManager {
             throw WaystationError.signingFailed(reason: "Calea specificată nu există pe disc: \(targetURL.path)")
         }
 
+        let entitlementsURL = createSandboxEntitlementsFile()
+        defer {
+            if let entitlementsURL = entitlementsURL {
+                try? FileManager.default.removeItem(at: entitlementsURL)
+            }
+        }
+
         // 1. Sign any nested .appex extension plugin bundles inside Contents/PlugIns/ first
         let pluginsURL = targetURL.appendingPathComponent("Contents/PlugIns", isDirectory: true)
         if let contents = try? FileManager.default.contentsOfDirectory(at: pluginsURL, includingPropertiesForKeys: nil) {
             for item in contents where item.pathExtension == "appex" {
-                let appexArgs = [
+                var appexArgs = [
                     "--force",
-                    "--sign", resolvedIdentity,
-                    item.path
+                    "--sign", resolvedIdentity
                 ]
+                if let entitlementsURL = entitlementsURL {
+                    appexArgs.append(contentsOf: ["--entitlements", entitlementsURL.path])
+                }
+                appexArgs.append(item.path)
+
                 let appexResult = try await processRunner.run(
                     command: "/usr/bin/codesign",
                     arguments: appexArgs,
@@ -186,11 +220,14 @@ public actor SigningManager {
         }
 
         // 2. Sign the top-level container .app bundle
-        let arguments = [
+        var arguments = [
             "--force",
-            "--sign", resolvedIdentity,
-            targetURL.path
+            "--sign", resolvedIdentity
         ]
+        if let entitlementsURL = entitlementsURL {
+            arguments.append(contentsOf: ["--entitlements", entitlementsURL.path])
+        }
+        arguments.append(targetURL.path)
 
         let result = try await processRunner.run(
             command: "/usr/bin/codesign",

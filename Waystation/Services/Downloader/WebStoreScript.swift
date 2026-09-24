@@ -1,7 +1,7 @@
 import Foundation
 
 /// Provides the JavaScript source injected into Chrome Web Store pages to replace
-/// the "Add to Chrome" button with a native-styled "Add to Safari" button,
+/// the "Add to Chrome" button with a native-styled "Add to Safari" (or "✓ Installed") button,
 /// hide browser incompatibility warning banners, hide unsupported Themes tabs, and communicate with Swift.
 enum WebStoreScript {
     static let scriptSource: String = """
@@ -11,56 +11,84 @@ enum WebStoreScript {
 
         const EXTENSION_ID_REGEX = /[a-z]{32}/;
 
+        // Mock Chrome runtime and userAgentData so Web Store treats browser as genuine modern Google Chrome
+        if (!window.chrome) {
+            window.chrome = {
+                app: { isInstalled: false },
+                webstore: {},
+                runtime: {
+                    PlatformOs: { MAC: 'mac' },
+                    PlatformArch: { ARM64: 'arm64' }
+                }
+            };
+        }
+
+        if (!navigator.userAgentData) {
+            try {
+                Object.defineProperty(navigator, 'userAgentData', {
+                    get: () => ({
+                        brands: [
+                            { brand: 'Google Chrome', version: '131' },
+                            { brand: 'Chromium', version: '131' },
+                            { brand: 'Not_A Brand', version: '24' }
+                        ],
+                        mobile: false,
+                        platform: 'macOS',
+                        getHighEntropyValues: () => Promise.resolve({
+                            architecture: 'arm',
+                            bitness: '64',
+                            model: '',
+                            platformVersion: '15.0.0',
+                            uaFullVersion: '131.0.0.0'
+                        })
+                    }),
+                    configurable: true
+                });
+            } catch (e) {}
+        }
+
         // Auto-redirect away from Themes catalog to Extensions catalog
         if (window.location.pathname.includes('/category/themes')) {
             window.location.replace('https://chromewebstore.google.com/category/extensions');
             return;
         }
 
-        // Inject global CSS rule to permanently hide Themes navigation tabs, links, and sections
-        const styleId = 'waystation-clean-styles';
-        if (!document.getElementById(styleId)) {
-            const style = document.createElement('style');
-            style.id = styleId;
-            style.textContent = `
-                a[href*="/category/themes"],
-                a[href*="category/themes"],
-                [role="tab"]:has(a[href*="/category/themes"]),
-                [role="tab"]:has(a[href*="category/themes"]),
-                li:has(a[href*="/category/themes"]),
-                li:has(a[href*="category/themes"]),
-                div:has(> a[href*="/category/themes"]) {
-                    display: none !important;
-                    visibility: hidden !important;
-                    pointer-events: none !important;
-                    width: 0 !important;
-                    height: 0 !important;
-                    margin: 0 !important;
-                    padding: 0 !important;
-                    overflow: hidden !important;
-                }
-            `;
-            if (document.head) {
-                document.head.appendChild(style);
-            } else {
-                document.addEventListener('DOMContentLoaded', () => {
-                    if (document.head && !document.getElementById(styleId)) {
-                        document.head.appendChild(style);
-                    }
-                });
+        // Ensure all target="_blank" links open in current window
+        document.addEventListener('click', function(e) {
+            const anchor = e.target && e.target.closest ? e.target.closest('a') : null;
+            if (anchor && anchor.getAttribute('target') === '_blank') {
+                anchor.removeAttribute('target');
             }
-        }
+        }, true);
+
+        // Keep window.open navigations inside this webview
+        const origOpen = window.open;
+        window.open = function(url) {
+            if (url && typeof url === 'string' && url !== '' && url !== 'about:blank') {
+                window.location.href = url;
+                return window;
+            }
+            return origOpen.apply(this, arguments);
+        };
 
         function getExtensionId() {
             const match = window.location.pathname.match(EXTENSION_ID_REGEX);
             return match ? match[0] : null;
         }
 
+        function getExtensionSlug() {
+            const parts = window.location.pathname.split('/');
+            const detailIdx = parts.indexOf('detail');
+            if (detailIdx !== -1 && parts[detailIdx + 1] && parts[detailIdx + 1].length > 0 && parts[detailIdx + 1].length !== 32) {
+                return parts[detailIdx + 1].toLowerCase().replace(/[^a-z0-9]/g, '');
+            }
+            return null;
+        }
+
         function isThemePage() {
             const path = window.location.pathname.toLowerCase();
             if (path.includes('/category/themes')) return true;
 
-            // Check if item specifically belongs to theme categories or collections
             const themeSubcategories = document.querySelectorAll('a[href*="/category/themes/"]');
             if (themeSubcategories.length > 0) return true;
 
@@ -69,7 +97,6 @@ enum WebStoreScript {
 
             const categoryLinks = document.querySelectorAll('a[href*="category/themes"]');
             for (const link of categoryLinks) {
-                // Ignore top navigation tabs or header menu items
                 if (link.closest('header, nav, [role="navigation"], [role="tab"], [role="tablist"]')) {
                     continue;
                 }
@@ -82,33 +109,53 @@ enum WebStoreScript {
         }
 
         function getExtensionTitle() {
-            // Priority 1: Extract URL slug /detail/<slug>/<id>
-            const parts = window.location.pathname.split('/');
-            const detailIdx = parts.indexOf('detail');
-            let fallbackSlug = null;
-            if (detailIdx !== -1 && parts[detailIdx + 1] && parts[detailIdx + 1].length > 0 && parts[detailIdx + 1].length !== 32) {
-                fallbackSlug = parts[detailIdx + 1].split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
-            }
-
-            // Priority 2: Check h1 if not generic
+            const slug = getExtensionSlug();
             const h1 = document.querySelector('h1');
             if (h1 && h1.textContent.trim()) {
                 const text = h1.textContent.trim();
-                if (!text.toLowerCase().includes('welcome') && !text.toLowerCase().includes('chrome web store')) {
-                    return text;
+                const cleanH1 = text.toLowerCase().replace(/[^a-z0-9]/g, '');
+                // Verify that h1 matches the current URL slug rather than being leftover from previous SPA page
+                if (!slug || cleanH1.includes(slug) || slug.includes(cleanH1)) {
+                    if (!text.toLowerCase().includes('welcome') && !text.toLowerCase().includes('chrome web store')) {
+                        return text;
+                    }
                 }
             }
 
-            if (fallbackSlug) {
-                return fallbackSlug;
-            }
-
-            const titleParts = document.title.split(' - Chrome Web Store');
-            if (titleParts[0].trim() && !titleParts[0].toLowerCase().includes('welcome') && !titleParts[0].toLowerCase().includes('chrome web store')) {
-                return titleParts[0].trim();
+            const parts = window.location.pathname.split('/');
+            const detailIdx = parts.indexOf('detail');
+            if (detailIdx !== -1 && parts[detailIdx + 1] && parts[detailIdx + 1].length > 0 && parts[detailIdx + 1].length !== 32) {
+                return parts[detailIdx + 1].split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
             }
 
             return 'Chrome Extension';
+        }
+
+        function isCurrentExtensionInstalled() {
+            if (!window.__waystationInstalled) return false;
+            const names = window.__waystationInstalled.names || [];
+            const ids = window.__waystationInstalled.ids || [];
+
+            const currentSlug = getExtensionSlug();
+            const currentExtId = (getExtensionId() || '').toLowerCase();
+
+            for (const id of ids) {
+                const cleanId = id.toLowerCase().replace(/[^a-z0-9]/g, '');
+                if (cleanId && currentSlug && (cleanId === currentSlug || currentSlug.includes(cleanId) || cleanId.includes(currentSlug))) {
+                    return true;
+                }
+                if (cleanId && currentExtId && cleanId === currentExtId) {
+                    return true;
+                }
+            }
+
+            for (const n of names) {
+                const cleanN = n.toLowerCase().replace(/[^a-z0-9]/g, '');
+                if (cleanN && currentSlug && (cleanN === currentSlug || currentSlug.includes(cleanN) || cleanN.includes(currentSlug))) {
+                    return true;
+                }
+            }
+            return false;
         }
 
         function triggerSwiftInstall() {
@@ -125,6 +172,60 @@ enum WebStoreScript {
             }
         }
 
+        function setButtonText(btn, label) {
+            const descendants = btn.querySelectorAll('*');
+            let textSet = false;
+            for (const el of descendants) {
+                if (el.children.length === 0 && el.textContent && el.textContent.trim().length > 0) {
+                    el.textContent = label;
+                    textSet = true;
+                }
+            }
+            if (!textSet) {
+                for (const node of btn.childNodes) {
+                    if (node.nodeType === 3 && node.textContent.trim().length > 0) {
+                        node.textContent = label;
+                        textSet = true;
+                    }
+                }
+            }
+            if (!textSet) {
+                btn.textContent = label;
+            }
+        }
+
+        function hideUnavailableBanners() {
+            // Only execute on detail pages to avoid touching catalog/discover views
+            if (!window.location.pathname.includes('/detail/')) return;
+
+            // Find all elements containing "View guide", "Item currently unavailable", or "troubleshooting"
+            const candidates = document.querySelectorAll('a, button, span, p, div');
+            for (const el of candidates) {
+                const txt = (el.textContent || '').trim().toLowerCase();
+                if (txt === 'view guide' || txt === 'vezi ghidul' || txt.includes('view guide') || txt.includes('item currently unavailable') || txt.includes('troubleshooting guide')) {
+                    // Walk up to find the banner container (stopping before any ancestor that contains h1)
+                    let box = el;
+                    while (box && box.parentElement &&
+                           !box.parentElement.querySelector('h1') &&
+                           box.parentElement !== document.body &&
+                           box.parentElement.tagName !== 'MAIN') {
+                        box = box.parentElement;
+                    }
+
+                    // If box doesn't contain h1, hide it completely
+                    if (box && !box.querySelector('h1')) {
+                        box.style.setProperty('display', 'none', 'important');
+                        box.style.setProperty('height', '0px', 'important');
+                        box.style.setProperty('min-height', '0px', 'important');
+                        box.style.setProperty('margin', '0px', 'important');
+                        box.style.setProperty('padding', '0px', 'important');
+                        box.style.setProperty('visibility', 'hidden', 'important');
+                        box.style.setProperty('overflow', 'hidden', 'important');
+                    }
+                }
+            }
+        }
+
         function applyReplacements() {
             // Check for themes URL and redirect
             if (window.location.pathname.includes('/category/themes')) {
@@ -132,118 +233,37 @@ enum WebStoreScript {
                 return;
             }
 
-            // 1. Hide Themes tab links and parent elements
-            const themeLinks = document.querySelectorAll('a[href*="/category/themes"], a[href*="category/themes"]');
-            for (const link of themeLinks) {
-                let container = link.closest('li, [role="tab"], div[role="tab"], div.mUIrbf, div.VfPpkd-dgl27d');
-                if (container) {
-                    container.style.setProperty('display', 'none', 'important');
-                } else {
-                    link.style.setProperty('display', 'none', 'important');
-                }
+            // Only perform button replacements and alert removal on extension detail pages
+            if (!window.location.pathname.includes('/detail/')) {
+                return;
             }
 
-            // 2. Hide Google's "Item currently unavailable" warning banner safely without affecting page content
-            const allElements = document.querySelectorAll('div, section');
-            for (const el of allElements) {
-                if (el.textContent && el.textContent.includes('Item currently unavailable') && !el.querySelector('h1')) {
-                    let target = el;
-                    while (target.parentElement &&
-                           target.parentElement.textContent.includes('Item currently unavailable') &&
-                           !target.parentElement.querySelector('h1') &&
-                           target.parentElement !== document.body &&
-                           target.parentElement !== document.documentElement) {
-                        target = target.parentElement;
-                    }
-                    target.style.setProperty('display', 'none', 'important');
-                    target.style.setProperty('height', '0px', 'important');
-                    target.style.setProperty('margin', '0px', 'important');
-                    target.style.setProperty('padding', '0px', 'important');
-                    target.style.setProperty('overflow', 'hidden', 'important');
-                }
-            }
-
-            // Also check id="i3" directly
-            const alertI3 = document.getElementById('i3');
-            if (alertI3) {
-                alertI3.style.setProperty('display', 'none', 'important');
-                alertI3.style.setProperty('height', '0px', 'important');
-                alertI3.style.setProperty('margin', '0px', 'important');
-                alertI3.style.setProperty('padding', '0px', 'important');
-            }
+            hideUnavailableBanners();
 
             const isTheme = isThemePage();
+            const isInstalled = isCurrentExtensionInstalled();
 
-            // 3. Find the "Add to Chrome" button & text span
-            const spans = document.querySelectorAll('span.UywwFc-vQzf8d, span');
-            for (const span of spans) {
-                const text = (span.textContent || '').trim().toLowerCase();
-                if (text === 'add to chrome' || text === 'add to safari' || text === 'themes not supported') {
-                    if (isTheme) {
-                        span.textContent = 'Themes Not Supported';
-                        const btn = span.closest('button');
-                        if (btn) {
-                            btn.setAttribute('disabled', 'true');
-                            btn.style.setProperty('background-color', '#8e8e93', 'important');
-                            btn.style.setProperty('cursor', 'not-allowed', 'important');
-                            btn.style.setProperty('opacity', '0.6', 'important');
-                        }
-                    } else {
-                        span.textContent = 'Add to Safari';
-
-                        const btn = span.closest('button');
-                        if (btn) {
-                            btn.removeAttribute('disabled');
-                            btn.removeAttribute('aria-disabled');
-                            btn.style.setProperty('background-color', '#0071e3', 'important');
-                            btn.style.setProperty('color', '#ffffff', 'important');
-                            btn.style.setProperty('cursor', 'pointer', 'important');
-                            btn.style.setProperty('opacity', '1.0', 'important');
-                            btn.style.setProperty('pointer-events', 'auto', 'important');
-
-                            if (!btn.dataset.waystationBound) {
-                                btn.dataset.waystationBound = 'true';
-                                btn.addEventListener('click', function(e) {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    e.stopImmediatePropagation();
-                                    triggerSwiftInstall();
-                                }, true);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Also check buttons directly in case span class differed
+            // Find buttons on detail page
             const buttons = document.querySelectorAll('button');
             for (const btn of buttons) {
                 const text = (btn.textContent || '').trim().toLowerCase();
-                if (text.includes('add to chrome') || text.includes('add to safari') || text.includes('themes not supported')) {
+                if (text.includes('add to chrome') || text.includes('add to safari') || text.includes('themes not supported') || text.includes('installed')) {
                     if (isTheme) {
                         btn.setAttribute('disabled', 'true');
                         btn.style.setProperty('background-color', '#8e8e93', 'important');
                         btn.style.setProperty('cursor', 'not-allowed', 'important');
                         btn.style.setProperty('opacity', '0.6', 'important');
-                        for (const node of btn.childNodes) {
-                            if (node.nodeType === 3 && (node.textContent.includes('Add to Chrome') || node.textContent.includes('Add to Safari'))) {
-                                node.textContent = 'Themes Not Supported';
-                            }
-                        }
+                        setButtonText(btn, 'Themes Not Supported');
                     } else {
                         btn.removeAttribute('disabled');
                         btn.removeAttribute('aria-disabled');
-                        btn.style.setProperty('background-color', '#0071e3', 'important');
+                        btn.style.setProperty('background-color', isInstalled ? '#34c759' : '#0071e3', 'important');
                         btn.style.setProperty('color', '#ffffff', 'important');
                         btn.style.setProperty('cursor', 'pointer', 'important');
                         btn.style.setProperty('opacity', '1.0', 'important');
                         btn.style.setProperty('pointer-events', 'auto', 'important');
 
-                        for (const node of btn.childNodes) {
-                            if (node.nodeType === 3 && (node.textContent.includes('Add to Chrome') || node.textContent.includes('Themes Not Supported'))) {
-                                node.textContent = 'Add to Safari';
-                            }
-                        }
+                        setButtonText(btn, isInstalled ? '✓ Installed' : 'Add to Safari');
 
                         if (!btn.dataset.waystationBound) {
                             btn.dataset.waystationBound = 'true';
@@ -259,37 +279,47 @@ enum WebStoreScript {
             }
         }
 
+        window.__waystationUpdateButtons = applyReplacements;
+
         // Hook into SPA history state navigation
         const origPushState = history.pushState;
         history.pushState = function() {
             origPushState.apply(this, arguments);
             setTimeout(applyReplacements, 50);
-            setTimeout(applyReplacements, 250);
-            setTimeout(applyReplacements, 600);
+            setTimeout(applyReplacements, 200);
+            setTimeout(applyReplacements, 500);
         };
 
         const origReplaceState = history.replaceState;
         history.replaceState = function() {
             origReplaceState.apply(this, arguments);
             setTimeout(applyReplacements, 50);
-            setTimeout(applyReplacements, 250);
-            setTimeout(applyReplacements, 600);
+            setTimeout(applyReplacements, 200);
+            setTimeout(applyReplacements, 500);
         };
 
         window.addEventListener('popstate', () => {
             setTimeout(applyReplacements, 50);
-            setTimeout(applyReplacements, 250);
-            setTimeout(applyReplacements, 600);
+            setTimeout(applyReplacements, 200);
+            setTimeout(applyReplacements, 500);
         });
 
-        // Fast periodic poll ensures immediate reactivity
-        setInterval(applyReplacements, 300);
+        // Debounced MutationObserver to prevent excessive DOM inspection
+        let debounceTimer = null;
+        const observer = new MutationObserver(() => {
+            if (debounceTimer) clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(applyReplacements, 80);
+        });
 
-        // Run immediately
+        observer.observe(document.documentElement, {
+            childList: true,
+            subtree: true
+        });
+
+        // Run when ready
+        applyReplacements();
         if (document.readyState === 'loading') {
             document.addEventListener('DOMContentLoaded', applyReplacements);
-        } else {
-            applyReplacements();
         }
     })();
     """

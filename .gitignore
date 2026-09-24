@@ -33,3 +33,4 @@ fastlane/test_output
 
 /_bmad*
 /.agent*
+*.zip

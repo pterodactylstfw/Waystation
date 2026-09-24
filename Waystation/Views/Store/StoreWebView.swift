@@ -12,12 +12,32 @@ struct StoreWebView: NSViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
 
-        // Content controller with injected WebStoreScript
         let userContentController = WKUserContentController()
+
+        // Inject initial installed extensions state if available on disk
+        if let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+            let registryURL = appSupport.appendingPathComponent("Waystation/registry.json")
+            if let data = try? Data(contentsOf: registryURL),
+               let exts = try? JSONDecoder().decode([InstalledExtension].self, from: data) {
+                let names = exts.map { $0.name }
+                let ids = exts.map { $0.id }
+                if let jsonData = try? JSONSerialization.data(withJSONObject: ["names": names, "ids": ids]),
+                   let jsonString = String(data: jsonData, encoding: .utf8) {
+                    let preload = WKUserScript(
+                        source: "window.__waystationInstalled = \(jsonString);",
+                        injectionTime: .atDocumentStart,
+                        forMainFrameOnly: true
+                    )
+                    userContentController.addUserScript(preload)
+                }
+            }
+        }
+
+        // Injected WebStoreScript (main frame only)
         let userScript = WKUserScript(
             source: WebStoreScript.scriptSource,
             injectionTime: .atDocumentStart,
-            forMainFrameOnly: false
+            forMainFrameOnly: true
         )
         userContentController.addUserScript(userScript)
         userContentController.add(context.coordinator, name: "waystationHandler")
@@ -27,13 +47,14 @@ struct StoreWebView: NSViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
 
-        // Use desktop Chrome User-Agent so Chrome Web Store renders native desktop extension detail pages
-        webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+        // Use modern desktop Chrome User-Agent so Chrome Web Store renders native desktop extension detail pages
+        webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
         context.coordinator.setupObservers(for: webView)
 
         // Initial load
         let initialURL = URL(string: viewModel.currentURLString) ?? StoreViewModel.homeURL
+        context.coordinator.lastLoadedURL = initialURL
         let request = URLRequest(url: initialURL)
         webView.load(request)
 
@@ -43,9 +64,15 @@ struct StoreWebView: NSViewRepresentable {
     func updateNSView(_ webView: WKWebView, context: Context) {
         guard let action = viewModel.navigationAction else { return }
 
+        // Clear action on next tick so state isn't mutated synchronously during render
+        DispatchQueue.main.async {
+            self.viewModel.navigationAction = nil
+        }
+
         switch action {
         case .load(let url):
-            if webView.url != url {
+            if context.coordinator.lastLoadedURL != url {
+                context.coordinator.lastLoadedURL = url
                 webView.load(URLRequest(url: url))
             }
         case .goBack:
@@ -61,14 +88,11 @@ struct StoreWebView: NSViewRepresentable {
         case .stopLoading:
             webView.stopLoading()
         }
-
-        DispatchQueue.main.async {
-            self.viewModel.navigationAction = nil
-        }
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         var viewModel: StoreViewModel
+        var lastLoadedURL: URL?
         private var observations: [NSKeyValueObservation] = []
 
         init(viewModel: StoreViewModel) {
@@ -90,6 +114,17 @@ struct StoreWebView: NSViewRepresentable {
 
             Task { @MainActor in
                 self.viewModel.handleAddToSafari(payload: payload)
+            }
+        }
+
+        func injectInstalledExtensions(into webView: WKWebView) async {
+            guard let installed = try? await ExtensionRegistry.shared.loadAll() else { return }
+            let names = installed.map { $0.name }
+            let ids = installed.map { $0.id }
+            if let jsonData = try? JSONSerialization.data(withJSONObject: ["names": names, "ids": ids]),
+               let jsonString = String(data: jsonData, encoding: .utf8) {
+                let injection = "window.__waystationInstalled = \(jsonString); if (typeof window.__waystationUpdateButtons === 'function') { window.__waystationUpdateButtons(); }"
+                webView.evaluateJavaScript(injection, completionHandler: nil)
             }
         }
 
@@ -147,6 +182,7 @@ struct StoreWebView: NSViewRepresentable {
                         isLoading: view.isLoading,
                         progress: view.estimatedProgress
                     )
+                    await self.injectInstalledExtensions(into: view)
                 }
             })
 
@@ -163,6 +199,23 @@ struct StoreWebView: NSViewRepresentable {
             })
         }
 
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        ) {
+            // Handle target="_blank" links within the same webview
+            if navigationAction.targetFrame == nil {
+                if let url = navigationAction.request.url {
+                    lastLoadedURL = url
+                    webView.load(URLRequest(url: url))
+                }
+                decisionHandler(.cancel)
+                return
+            }
+            decisionHandler(.allow)
+        }
+
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
             Task { @MainActor in
                 viewModel.isLoading = true
@@ -170,6 +223,7 @@ struct StoreWebView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            lastLoadedURL = webView.url
             Task { @MainActor in
                 viewModel.isLoading = false
                 viewModel.updateState(
@@ -180,6 +234,8 @@ struct StoreWebView: NSViewRepresentable {
                     isLoading: false,
                     progress: 1.0
                 )
+
+                await self.injectInstalledExtensions(into: webView)
             }
             // Re-evaluate script to ensure dynamic injection kicks in
             webView.evaluateJavaScript(WebStoreScript.scriptSource, completionHandler: nil)
@@ -192,15 +248,20 @@ struct StoreWebView: NSViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            // Ignore NSURLErrorCancelled (-999) when user navigates or redirects
+            if (error as NSError).code == NSURLErrorCancelled {
+                return
+            }
             Task { @MainActor in
                 viewModel.isLoading = false
             }
         }
 
-        // Handle target="_blank" links within the same webview
+        // Handle target="_blank" links / window.open within the same webview
         func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-            if navigationAction.targetFrame == nil {
-                webView.load(navigationAction.request)
+            if navigationAction.targetFrame == nil, let url = navigationAction.request.url, url.absoluteString != "about:blank" {
+                lastLoadedURL = url
+                webView.load(URLRequest(url: url))
             }
             return nil
         }

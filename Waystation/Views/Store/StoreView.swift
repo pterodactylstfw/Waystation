@@ -162,10 +162,12 @@ struct StoreView: View {
             }
         }
         .alert(
-            "Add to Safari: \(viewModel.selectedExtension?.title ?? "Extension")",
+            viewModel.installedMatch != nil
+                ? "Already Installed: \(viewModel.selectedExtension?.title ?? "Extension")"
+                : "Add to Safari: \(viewModel.selectedExtension?.title ?? "Extension")",
             isPresented: $viewModel.showInstallConfirmation
         ) {
-            Button("Convert & Install", role: .none) {
+            Button(viewModel.installedMatch != nil ? "Reinstall / Update" : "Convert & Install", role: .none) {
                 if let ext = viewModel.selectedExtension {
                     Task {
                         await viewModel.startDownloadAndPipeline(payload: ext)
@@ -174,10 +176,15 @@ struct StoreView: View {
             }
             Button("Cancel", role: .cancel) {
                 viewModel.selectedExtension = nil
+                viewModel.installedMatch = nil
             }
         } message: {
             if let ext = viewModel.selectedExtension {
-                Text("Extension ID: \(ext.extensionId)\nWaystation will download the CRX package and automatically launch the Safari conversion pipeline.")
+                if let match = viewModel.installedMatch {
+                    Text("'\(match.name)' (version \(match.version)) is already installed in your Safari Library.\n\nInstalling again will re-convert and replace the current version.")
+                } else {
+                    Text("Extension ID: \(ext.extensionId)\nWaystation will download the CRX package and automatically launch the Safari conversion pipeline.")
+                }
             }
         }
         .alert(

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// ViewModel driving Tab 3 (Library): extension list, search filter, expiration warnings, and batch re-signing.
 /// Conforms to Story 3.1, Story 3.2, Story 3.3, and Swift 6 concurrency specifications.
@@ -26,6 +27,10 @@ public final class LibraryViewModel {
     private let registry: ExtensionRegistry
     private let signingManager: SigningManager
 
+    // Lifecycle observers for real-time Safari process detection
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var pollingTask: Task<Void, Never>?
+
     public init(
         registry: ExtensionRegistry = .shared,
         signingManager: SigningManager = .shared,
@@ -34,6 +39,72 @@ public final class LibraryViewModel {
         self.registry = registry
         self.signingManager = signingManager
         self.logDrawerViewModel = logDrawerViewModel ?? .shared
+    }
+
+    /// Automatically observes Safari launches, quits (⌘Q), and window activations in real time.
+    public func startObservingSafariLifecycle() {
+        guard workspaceObservers.isEmpty else { return }
+
+        let center = NSWorkspace.shared.notificationCenter
+
+        let termObs = center.addObserver(
+            forName: NSWorkspace.didTerminateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.bundleIdentifier == "com.apple.Safari" else { return }
+            Task { @MainActor [weak self] in
+                await self?.checkSafariHealth()
+            }
+        }
+
+        let launchObs = center.addObserver(
+            forName: NSWorkspace.didLaunchApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.bundleIdentifier == "com.apple.Safari" else { return }
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                await self?.checkSafariHealth()
+            }
+        }
+
+        let activateObs = center.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                  app.bundleIdentifier == "com.apple.Safari" else { return }
+            Task { @MainActor [weak self] in
+                await self?.checkSafariHealth()
+            }
+        }
+
+        workspaceObservers = [termObs, launchObs, activateObs]
+
+        // Heartbeat poll every 3 seconds while on screen to guarantee real-time updates
+        pollingTask?.cancel()
+        pollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if Task.isCancelled { break }
+                await self?.checkSafariHealth()
+            }
+        }
+    }
+
+    /// Cleans up observers when the view disappears.
+    public func stopObservingSafariLifecycle() {
+        for obs in workspaceObservers {
+            NSWorkspace.shared.notificationCenter.removeObserver(obs)
+        }
+        workspaceObservers.removeAll()
+        pollingTask?.cancel()
+        pollingTask = nil
     }
 
     /// Filtered extensions matching the user's search query (Story 3.1).
@@ -118,45 +189,47 @@ public final class LibraryViewModel {
 
         let drawer = self.logDrawerViewModel
 
-        do {
-            let updated = try await signingManager.reSignAll(
-                onProgress: { [weak self] current, total, name in
-                    Task { @MainActor [weak self] in
-                        self?.resigningExtensionName = "\(name) (\(current)/\(total))"
-                    }
-                },
-                onOutputLine: { line in
+        var updatedList = extensions
+        var successCount = 0
+
+        for idx in updatedList.indices {
+            let ext = updatedList[idx]
+            resigningExtensionName = ext.name
+            drawer?.append(line: "[Re-sign] Processing '\(ext.name)' (v\(ext.version))...")
+
+            let appURL = ext.containerAppURL
+            guard FileManager.default.fileExists(atPath: appURL.path) else {
+                drawer?.append(line: "[Re-sign] Warning: Container app missing at \(appURL.path)")
+                continue
+            }
+
+            do {
+                try await signingManager.sign(targetURL: appURL) { line in
                     Task { @MainActor in
                         drawer?.append(line: line)
                     }
                 }
-            )
-            self.extensions = updated.sorted { $0.installedDate > $1.installedDate }
-            self.isResigningAll = false
-            self.resigningExtensionName = nil
-            self.logDrawerViewModel?.isStreaming = false
-            await verifyAllSignatures()
-        } catch {
-            logDrawerViewModel?.append(line: "[Signing] Batch re-signing error: \(error.localizedDescription)")
-            self.errorMessage = "Eșec la re-semnare: \(error.localizedDescription)"
-            self.isResigningAll = false
-            self.resigningExtensionName = nil
-            self.logDrawerViewModel?.isStreaming = false
+
+                // Update lastSignedDate to now
+                updatedList[idx].lastSignedDate = Date()
+                try await registry.update(updatedList[idx])
+                successCount += 1
+                drawer?.append(line: "[Re-sign] Successfully re-signed '\(ext.name)'. Expiration reset to 7 days.")
+            } catch {
+                drawer?.append(line: "[Re-sign] Error re-signing '\(ext.name)': \(error.localizedDescription)")
+            }
         }
+
+        self.extensions = updatedList
+        self.isResigningAll = false
+        self.resigningExtensionName = nil
+        logDrawerViewModel?.isStreaming = false
+        logDrawerViewModel?.append(line: "--- Batch Re-signing Finished (\(successCount)/\(extensions.count) succeeded) ---")
+
+        await verifyAllSignatures()
     }
 
-    /// Reveals the container `.app` bundle in macOS Finder.
-    public func revealInFinder(_ ext: InstalledExtension) {
-        let url = ext.containerAppURL
-        if FileManager.default.fileExists(atPath: url.path) {
-            NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: "")
-        } else {
-            // If .app does not exist yet at target location, reveal parent folder
-            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: ext.containerAppURL.deletingLastPathComponent().path)
-        }
-    }
-
-    /// Prompts uninstallation confirmation for the specified extension.
+    /// Prompts user confirmation before uninstalling an extension (Story 3.3).
     public func requestUninstall(_ ext: InstalledExtension) {
         self.extensionToUninstall = ext
         self.showUninstallConfirmation = true
@@ -184,6 +257,17 @@ public final class LibraryViewModel {
             self.errorMessage = "Failed to uninstall extension: \(error.localizedDescription)"
             self.extensionToUninstall = nil
             self.showUninstallConfirmation = false
+        }
+    }
+
+    /// Reveals the extension container app in Finder.
+    public func revealInFinder(_ ext: InstalledExtension) {
+        let url = ext.containerAppURL
+        let dirPath = url.deletingLastPathComponent().path
+        if FileManager.default.fileExists(atPath: url.path) {
+            NSWorkspace.shared.selectFile(url.path, inFileViewerRootedAtPath: dirPath)
+        } else {
+            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: dirPath)
         }
     }
 }
