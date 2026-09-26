@@ -6,7 +6,7 @@
 
 **Chrome Web Store extensions → Safari. One click.**
 
-[![Latest Release](https://img.shields.io/github/v/release/pterodactylstfw/Waystation?style=flat-square)](https://github.com/pterodactylstfw/Waystation/releases)
+[![Release](https://img.shields.io/badge/release-1.1.2-blue.svg?style=flat-square)](https://github.com/pterodactylstfw/Waystation/releases)
 [![Platform](https://img.shields.io/badge/platform-macOS%2014.0%2B-blue.svg?style=flat-square)](https://apple.com/macos)
 [![Swift](https://img.shields.io/badge/Swift-6.0-orange.svg?style=flat-square)](https://swift.org)
 [![License](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)](LICENSE)
