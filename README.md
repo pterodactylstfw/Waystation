@@ -15,7 +15,8 @@
 
 <br/>
 
-https://github.com/user-attachments/assets/waystation_demo.mp4
+<video src="https://raw.githubusercontent.com/pterodactylstfw/Waystation/main/waystation_demo.mp4" controls width="100%" style="max-width: 820px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.15);">
+</video>
 
 </div>
 
