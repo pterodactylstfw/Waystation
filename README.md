@@ -11,7 +11,7 @@
 [![Swift](https://img.shields.io/badge/Swift-6.0-orange.svg?style=flat-square)](https://swift.org)
 [![License](https://img.shields.io/badge/license-MIT-green.svg?style=flat-square)](LICENSE)
 
-[Download (v1.1.1)](https://github.com/pterodactylstfw/Waystation/releases/latest) · [Getting Started](#getting-started) · [Building From Source](#building-from-source)
+[Download (v1.1.2)](https://github.com/pterodactylstfw/Waystation/releases/latest) · [Getting Started](#getting-started) · [Building From Source](#building-from-source)
 
 </div>
 
