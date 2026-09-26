@@ -36,69 +36,81 @@ public actor ExtensionRegistry {
         appSupportDirectory.appendingPathComponent("Extensions", isDirectory: true)
     }
 
-    /// Loads all installed extensions from `registry.json`.
-    public func loadAll() throws -> [InstalledExtension] {
-        guard fileManager.fileExists(atPath: registryFileURL.path) else {
-            return []
-        }
+    /// Loads all installed extensions from `registry.json` via detached task to prevent actor starvation.
+    public func loadAll() async throws -> [InstalledExtension] {
+        let fileURL = registryFileURL
+        let decoder = self.decoder
+        return try await Task.detached {
+            guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                return []
+            }
 
-        let data = try Data(contentsOf: registryFileURL)
-        guard !data.isEmpty else {
-            return []
-        }
+            let data = try Data(contentsOf: fileURL)
+            guard !data.isEmpty else {
+                return []
+            }
 
-        return try decoder.decode([InstalledExtension].self, from: data)
+            return try decoder.decode([InstalledExtension].self, from: data)
+        }.value
     }
 
     /// Registers a new extension or updates an existing one, saving atomically.
-    public func register(_ ext: InstalledExtension) throws {
-        var all = try loadAll()
+    public func register(_ ext: InstalledExtension) async throws {
+        var all = try await loadAll()
         if let idx = all.firstIndex(where: { $0.id == ext.id }) {
             all[idx] = ext
         } else {
             all.append(ext)
         }
-        try saveAll(all)
+        try await saveAll(all)
     }
 
     /// Updates an existing extension entry.
-    public func update(_ ext: InstalledExtension) throws {
-        var all = try loadAll()
+    public func update(_ ext: InstalledExtension) async throws {
+        var all = try await loadAll()
         guard let idx = all.firstIndex(where: { $0.id == ext.id }) else {
             throw WaystationError.registryError(reason: "Extensia cu ID-ul '\(ext.id)' nu există în registru.")
         }
         all[idx] = ext
-        try saveAll(all)
+        try await saveAll(all)
     }
 
     /// Removes an extension entry by its ID.
-    public func remove(id: String) throws {
-        var all = try loadAll()
+    public func remove(id: String) async throws {
+        var all = try await loadAll()
         all.removeAll { $0.id == id }
-        try saveAll(all)
+        try await saveAll(all)
     }
 
     /// Finds a registered extension by ID.
-    public func find(id: String) throws -> InstalledExtension? {
-        let all = try loadAll()
+    public func find(id: String) async throws -> InstalledExtension? {
+        let all = try await loadAll()
         return all.first { $0.id == id }
     }
 
     /// Atomic persistence conforming strictly to AD-5.
-    /// Writes to a temporary file, flushes to disk, and replaces destination atomically.
-    private func saveAll(_ extensions: [InstalledExtension]) throws {
-        try fileManager.createDirectory(at: appSupportDirectory, withIntermediateDirectories: true)
-        try fileManager.createDirectory(at: extensionsDirectory, withIntermediateDirectories: true)
+    /// Writes to a temporary file, flushes to disk, and replaces destination atomically in detached task.
+    private func saveAll(_ extensions: [InstalledExtension]) async throws {
+        let appDir = appSupportDirectory
+        let extDir = extensionsDirectory
+        let regURL = registryFileURL
+        let encoder = self.encoder
 
-        let data = try encoder.encode(extensions)
+        try await Task.detached {
+            let fm = FileManager.default
+            try fm.createDirectory(at: appDir, withIntermediateDirectories: true)
+            try fm.createDirectory(at: extDir, withIntermediateDirectories: true)
 
-        let tempFile = appSupportDirectory.appendingPathComponent("registry.\(UUID().uuidString).tmp")
-        try data.write(to: tempFile, options: .atomic)
+            let data = try encoder.encode(extensions)
 
-        if fileManager.fileExists(atPath: registryFileURL.path) {
-            _ = try fileManager.replaceItemAt(registryFileURL, withItemAt: tempFile)
-        } else {
-            try fileManager.moveItem(at: tempFile, to: registryFileURL)
-        }
+            let tempFile = appDir.appendingPathComponent("registry.\(UUID().uuidString).tmp")
+            try data.write(to: tempFile, options: .atomic)
+
+            if fm.fileExists(atPath: regURL.path) {
+                _ = try fm.replaceItemAt(regURL, withItemAt: tempFile)
+            } else {
+                try fm.moveItem(at: tempFile, to: regURL)
+            }
+        }.value
     }
 }

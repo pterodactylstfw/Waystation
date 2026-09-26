@@ -14,9 +14,11 @@ struct ShakeEffect: GeometryEffect {
 public struct DropZoneView: View {
     @Bindable var viewModel: DropZoneViewModel
     @State private var shakeAnimValue: CGFloat = 0
+    var onGoToLibrary: (() -> Void)?
 
-    public init(viewModel: DropZoneViewModel) {
+    public init(viewModel: DropZoneViewModel, onGoToLibrary: (() -> Void)? = nil) {
         self.viewModel = viewModel
+        self.onGoToLibrary = onGoToLibrary
     }
 
     public var body: some View {
@@ -347,6 +349,16 @@ public struct DropZoneView: View {
                     Label("Reveal in Finder", systemImage: "folder")
                 }
                 .buttonStyle(.bordered)
+
+                if let onGoToLibrary {
+                    Button {
+                        viewModel.reset()
+                        onGoToLibrary()
+                    } label: {
+                        Label("Go to Library", systemImage: "square.grid.2x2")
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
             }
         }
         .padding(32)

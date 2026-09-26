@@ -71,7 +71,7 @@ public actor ArchiveExtractor {
                 try fileManager.copyItem(at: item, to: destURL)
             }
         } else {
-            let (archiveURL, isTemp) = try prepareExtractionArchive(from: sourceURL)
+            let (archiveURL, isTemp) = try await prepareExtractionArchive(from: sourceURL)
             defer {
                 if isTemp {
                     try? fileManager.removeItem(at: archiveURL)
@@ -109,56 +109,60 @@ public actor ArchiveExtractor {
 
     /// Verifică dacă fișierul este un pachet CRX2/CRX3. Dacă da, elimină antetul binar
     /// și creează un fișier temporar .zip ce poate fi extras curat cu ditto.
-    private func prepareExtractionArchive(from fileURL: URL) throws -> (archiveURL: URL, isTemporary: Bool) {
-        let handle = try FileHandle(forReadingFrom: fileURL)
-        defer { try? handle.close() }
+    /// Rulează I/O-ul într-un thread pool separat pentru a preveni thread starvation pe actor.
+    private func prepareExtractionArchive(from fileURL: URL) async throws -> (archiveURL: URL, isTemporary: Bool) {
+        let tempDir = fileManager.temporaryDirectory
+        return try await Task.detached {
+            let handle = try FileHandle(forReadingFrom: fileURL)
+            defer { try? handle.close() }
 
-        guard let magicData = try handle.read(upToCount: 4), magicData.count == 4 else {
+            guard let magicData = try handle.read(upToCount: 4), magicData.count == 4 else {
+                return (fileURL, false)
+            }
+
+            let magic = [UInt8](magicData)
+            // "Cr24" = [0x43, 0x72, 0x32, 0x34]
+            if magic == [0x43, 0x72, 0x32, 0x34] {
+                guard let versionData = try handle.read(upToCount: 4), versionData.count == 4 else {
+                    throw WaystationError.unarchiveFailed(reason: "Header CRX invalid (nu se poate citi versiunea).")
+                }
+                let version = versionData.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+
+                var zipOffset: UInt64 = 0
+                if version == 2 {
+                    guard let lengthsData = try handle.read(upToCount: 8), lengthsData.count == 8 else {
+                        throw WaystationError.unarchiveFailed(reason: "Header CRX2 invalid.")
+                    }
+                    let pubKeyLen = lengthsData.prefix(4).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+                    let sigLen = lengthsData.suffix(4).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+                    zipOffset = 16 + UInt64(pubKeyLen) + UInt64(sigLen)
+                } else if version == 3 {
+                    guard let headerLenData = try handle.read(upToCount: 4), headerLenData.count == 4 else {
+                        throw WaystationError.unarchiveFailed(reason: "Header CRX3 invalid.")
+                    }
+                    let headerLen = headerLenData.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+                    zipOffset = 12 + UInt64(headerLen)
+                } else {
+                    throw WaystationError.unarchiveFailed(reason: "Versiune CRX nesuportată: \(version).")
+                }
+
+                try handle.seek(toOffset: zipOffset)
+                guard let remainingData = try handle.readToEnd(), !remainingData.isEmpty else {
+                    throw WaystationError.unarchiveFailed(reason: "Pachetul CRX nu conține o arhivă ZIP validă.")
+                }
+
+                // Verifică semnătura standard PK\x03\x04
+                guard remainingData.count >= 4,
+                      remainingData.prefix(4) == Data([0x50, 0x4B, 0x03, 0x04]) else {
+                    throw WaystationError.unarchiveFailed(reason: "Formatul arhivei ZIP din interiorul CRX este invalid.")
+                }
+
+                let tempZipURL = tempDir.appendingPathComponent(UUID().uuidString + ".zip")
+                try remainingData.write(to: tempZipURL)
+                return (tempZipURL, true)
+            }
+
             return (fileURL, false)
-        }
-
-        let magic = [UInt8](magicData)
-        // "Cr24" = [0x43, 0x72, 0x32, 0x34]
-        if magic == [0x43, 0x72, 0x32, 0x34] {
-            guard let versionData = try handle.read(upToCount: 4), versionData.count == 4 else {
-                throw WaystationError.unarchiveFailed(reason: "Header CRX invalid (nu se poate citi versiunea).")
-            }
-            let version = versionData.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
-
-            var zipOffset: UInt64 = 0
-            if version == 2 {
-                guard let lengthsData = try handle.read(upToCount: 8), lengthsData.count == 8 else {
-                    throw WaystationError.unarchiveFailed(reason: "Header CRX2 invalid.")
-                }
-                let pubKeyLen = lengthsData.prefix(4).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
-                let sigLen = lengthsData.suffix(4).withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
-                zipOffset = 16 + UInt64(pubKeyLen) + UInt64(sigLen)
-            } else if version == 3 {
-                guard let headerLenData = try handle.read(upToCount: 4), headerLenData.count == 4 else {
-                    throw WaystationError.unarchiveFailed(reason: "Header CRX3 invalid.")
-                }
-                let headerLen = headerLenData.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
-                zipOffset = 12 + UInt64(headerLen)
-            } else {
-                throw WaystationError.unarchiveFailed(reason: "Versiune CRX nesuportată: \(version).")
-            }
-
-            try handle.seek(toOffset: zipOffset)
-            guard let remainingData = try handle.readToEnd(), !remainingData.isEmpty else {
-                throw WaystationError.unarchiveFailed(reason: "Pachetul CRX nu conține o arhivă ZIP validă.")
-            }
-
-            // Verifică semnătura standard PK\x03\x04
-            guard remainingData.count >= 4,
-                  remainingData.prefix(4) == Data([0x50, 0x4B, 0x03, 0x04]) else {
-                throw WaystationError.unarchiveFailed(reason: "Formatul arhivei ZIP din interiorul CRX este invalid.")
-            }
-
-            let tempZipURL = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".zip")
-            try remainingData.write(to: tempZipURL)
-            return (tempZipURL, true)
-        }
-
-        return (fileURL, false)
+        }.value
     }
 }

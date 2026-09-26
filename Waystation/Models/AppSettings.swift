@@ -33,6 +33,8 @@ public final class AppSettings {
         static let autoToggleSafariDevelopOption = "auto_toggle_safari_develop_option"
     }
 
+    private var launchdSyncTask: Task<Void, Never>?
+
     public var theme: AppTheme {
         didSet {
             UserDefaults.standard.set(theme.rawValue, forKey: Keys.theme)
@@ -42,18 +44,14 @@ public final class AppSettings {
     public var autoResignEnabled: Bool {
         didSet {
             UserDefaults.standard.set(autoResignEnabled, forKey: Keys.autoResignEnabled)
-            Task {
-                await updateLaunchdAgent()
-            }
+            scheduleLaunchdSync()
         }
     }
 
     public var autoResignIntervalDays: Int {
         didSet {
             UserDefaults.standard.set(autoResignIntervalDays, forKey: Keys.autoResignIntervalDays)
-            Task {
-                await updateLaunchdAgent()
-            }
+            scheduleLaunchdSync()
         }
     }
 
@@ -84,6 +82,15 @@ public final class AppSettings {
         self.customSigningIdentity = UserDefaults.standard.string(forKey: Keys.customSigningIdentity) ?? ""
         self.autoOpenSafariOnInstall = UserDefaults.standard.object(forKey: Keys.autoOpenSafariOnInstall) as? Bool ?? true
         self.autoToggleSafariDevelopOption = UserDefaults.standard.object(forKey: Keys.autoToggleSafariDevelopOption) as? Bool ?? false
+    }
+
+    private func scheduleLaunchdSync() {
+        launchdSyncTask?.cancel()
+        launchdSyncTask = Task {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            guard !Task.isCancelled else { return }
+            await updateLaunchdAgent()
+        }
     }
 
     private func updateLaunchdAgent() async {

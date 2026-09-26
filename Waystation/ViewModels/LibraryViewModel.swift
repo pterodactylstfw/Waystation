@@ -29,6 +29,7 @@ public final class LibraryViewModel {
 
     // Lifecycle observers for real-time Safari process detection
     private var workspaceObservers: [NSObjectProtocol] = []
+    private var defaultNotificationObservers: [NSObjectProtocol] = []
 
     public init(
         registry: ExtensionRegistry = .shared,
@@ -42,7 +43,7 @@ public final class LibraryViewModel {
 
     /// Automatically observes Safari launches, quits (⌘Q), and window activations in real time.
     public func startObservingSafariLifecycle() {
-        guard workspaceObservers.isEmpty else { return }
+        guard workspaceObservers.isEmpty && defaultNotificationObservers.isEmpty else { return }
 
         let wsCenter = NSWorkspace.shared.notificationCenter
 
@@ -83,6 +84,8 @@ public final class LibraryViewModel {
             }
         }
 
+        workspaceObservers = [termObs, launchObs, activateObs]
+
         let appFocusObs = NotificationCenter.default.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
@@ -93,7 +96,7 @@ public final class LibraryViewModel {
             }
         }
 
-        workspaceObservers = [termObs, launchObs, activateObs, appFocusObs]
+        defaultNotificationObservers = [appFocusObs]
     }
 
     /// Cleans up observers when the view disappears.
@@ -101,9 +104,13 @@ public final class LibraryViewModel {
         let wsCenter = NSWorkspace.shared.notificationCenter
         for obs in workspaceObservers {
             wsCenter.removeObserver(obs)
-            NotificationCenter.default.removeObserver(obs)
         }
         workspaceObservers.removeAll()
+
+        for obs in defaultNotificationObservers {
+            NotificationCenter.default.removeObserver(obs)
+        }
+        defaultNotificationObservers.removeAll()
     }
 
     /// Filtered extensions matching the user's search query (Story 3.1).
@@ -128,31 +135,20 @@ public final class LibraryViewModel {
             self.extensions = loaded.sorted { $0.installedDate > $1.installedDate }
             isLoading = false
             await verifyAllSignatures()
-            await checkSafariHealth()
         } catch {
-            self.errorMessage = "Failed to load installed extensions: \(error.localizedDescription)"
-            isLoading = false
+            self.errorMessage = "Failed to load extensions: \(error.localizedDescription)"
+            self.isLoading = false
         }
     }
 
-    /// Verifies on-disk code signatures for all installed extensions in parallel.
+    /// Verifies the codesign and gatekeeper validity of each installed extension in parallel.
     public func verifyAllSignatures() async {
         isVerifyingSignatures = true
         var results: [String: SignatureVerificationResult] = [:]
 
         for ext in extensions {
-            let appURL = ext.containerAppURL
-            if FileManager.default.fileExists(atPath: appURL.path) {
-                let verification = await signingManager.verifySignature(for: appURL)
-                results[ext.id] = verification
-            } else {
-                results[ext.id] = SignatureVerificationResult(
-                    isValidOnDisk: false,
-                    isAdHoc: false,
-                    authority: nil,
-                    statusMessage: "Bundle missing on disk"
-                )
-            }
+            let status = await signingManager.verifySignature(for: ext.containerAppURL)
+            results[ext.id] = status
         }
 
         self.signatureStatuses = results
@@ -169,10 +165,9 @@ public final class LibraryViewModel {
 
     /// Requests automated toggle of "Allow Unsigned Extensions" in Safari.
     public func toggleSafariUnsignedExtensions() async {
-        let drawer = self.logDrawerViewModel
-        _ = await SafariAutomationService.shared.toggleAllowUnsignedExtensions { line in
-            Task { @MainActor in
-                drawer?.append(line: line)
+        _ = await SafariAutomationService.shared.toggleAllowUnsignedExtensions { [weak self] line in
+            Task { @MainActor [weak self] in
+                self?.logDrawerViewModel?.append(line: line)
             }
         }
         try? await Task.sleep(nanoseconds: 800_000_000)
@@ -186,26 +181,24 @@ public final class LibraryViewModel {
         logDrawerViewModel?.isStreaming = true
         logDrawerViewModel?.append(line: "--- Initiating Batch Re-signing (Story 3.2) ---")
 
-        let drawer = self.logDrawerViewModel
-
         var updatedList = extensions
         var successCount = 0
 
         for idx in updatedList.indices {
             let ext = updatedList[idx]
             resigningExtensionName = ext.name
-            drawer?.append(line: "[Re-sign] Processing '\(ext.name)' (v\(ext.version))...")
+            logDrawerViewModel?.append(line: "[Re-sign] Processing '\(ext.name)' (v\(ext.version))...")
 
             let appURL = ext.containerAppURL
             guard FileManager.default.fileExists(atPath: appURL.path) else {
-                drawer?.append(line: "[Re-sign] Warning: Container app missing at \(appURL.path)")
+                logDrawerViewModel?.append(line: "[Re-sign] Warning: Container app missing at \(appURL.path)")
                 continue
             }
 
             do {
-                try await signingManager.sign(targetURL: appURL) { line in
-                    Task { @MainActor in
-                        drawer?.append(line: line)
+                try await signingManager.sign(targetURL: appURL) { [weak self] line in
+                    Task { @MainActor [weak self] in
+                        self?.logDrawerViewModel?.append(line: line)
                     }
                 }
 
@@ -213,9 +206,9 @@ public final class LibraryViewModel {
                 updatedList[idx].lastSignedDate = Date()
                 try await registry.update(updatedList[idx])
                 successCount += 1
-                drawer?.append(line: "[Re-sign] Successfully re-signed '\(ext.name)'. Expiration reset to 7 days.")
+                logDrawerViewModel?.append(line: "[Re-sign] Successfully re-signed '\(ext.name)'. Expiration reset to 7 days.")
             } catch {
-                drawer?.append(line: "[Re-sign] Error re-signing '\(ext.name)': \(error.localizedDescription)")
+                logDrawerViewModel?.append(line: "[Re-sign] Error re-signing '\(ext.name)': \(error.localizedDescription)")
             }
         }
 

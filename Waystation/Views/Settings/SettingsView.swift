@@ -3,7 +3,7 @@ import SwiftUI
 /// Settings and preferences window for Waystation.
 /// Conforms to macOS Human Interface Guidelines and AD-1.
 public struct SettingsView: View {
-    @State private var settings = AppSettings.shared
+    @Bindable private var settings = AppSettings.shared
     @State private var detectedIdentity: String = "Detecting..."
     @State private var isAgentActive: Bool = false
     @State private var isAccessibilityGranted: Bool = false
@@ -35,25 +35,19 @@ public struct SettingsView: View {
             if settings.autoResignEnabled {
                 _ = await LaunchdManager.shared.installAgent(intervalDays: settings.autoResignIntervalDays)
             }
-            self.isAgentActive = await LaunchdManager.shared.isAgentInstalled()
+            self.isAgentActive = await LaunchdManager.shared.isAgentInstalled
             self.isAccessibilityGranted = SafariAutomationService.shared.isAccessibilityGranted()
         }
         .onChange(of: settings.autoResignEnabled) { _, isEnabled in
             Task {
-                if isEnabled {
-                    _ = await LaunchdManager.shared.installAgent(intervalDays: settings.autoResignIntervalDays)
-                } else {
-                    await LaunchdManager.shared.uninstallAgent()
-                }
-                self.isAgentActive = await LaunchdManager.shared.isAgentInstalled()
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                self.isAgentActive = await LaunchdManager.shared.isAgentInstalled
             }
         }
-        .onChange(of: settings.autoResignIntervalDays) { _, newInterval in
+        .onChange(of: settings.autoResignIntervalDays) { _, _ in
             Task {
-                if settings.autoResignEnabled {
-                    _ = await LaunchdManager.shared.installAgent(intervalDays: newInterval)
-                    self.isAgentActive = await LaunchdManager.shared.isAgentInstalled()
-                }
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                self.isAgentActive = await LaunchdManager.shared.isAgentInstalled
             }
         }
     }

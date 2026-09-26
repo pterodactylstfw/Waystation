@@ -1,47 +1,44 @@
 import Foundation
 
-/// Service managing macOS background launchd agent for automatic extension re-signing.
-/// Conforms to AD-2 (ProcessRunner) and ensures extensions never expire unexpectedly.
+/// Service managing the macOS launchd user agent for silent background re-signing.
+/// Conforms to Story 3.2 and maintains `~/Library/LaunchAgents/org.waystation.autoresign.plist`.
 public actor LaunchdManager {
     public static let shared = LaunchdManager()
 
-    private let processRunner: ProcessRunner
-    private let fileManager = FileManager.default
     public static let agentLabel = "org.waystation.autoresign"
+
+    private let fileManager = FileManager.default
+    private let processRunner: ProcessRunner
 
     public init(processRunner: ProcessRunner = .shared) {
         self.processRunner = processRunner
     }
 
-    private var launchAgentsDirectory: URL {
-        fileManager.homeDirectoryForCurrentUser
+    /// `~/Library/LaunchAgents/`
+    public var launchAgentsDirectory: URL {
+        let home = fileManager.homeDirectoryForCurrentUser
+        return home
             .appendingPathComponent("Library", isDirectory: true)
             .appendingPathComponent("LaunchAgents", isDirectory: true)
     }
 
-    private var plistURL: URL {
+    /// Destination plist URL: `~/Library/LaunchAgents/org.waystation.autoresign.plist`
+    public var plistURL: URL {
         launchAgentsDirectory.appendingPathComponent("\(Self.agentLabel).plist")
     }
 
-    private var logsDirectory: URL {
-        fileManager.homeDirectoryForCurrentUser
+    /// `~/Library/Logs/Waystation/`
+    public var logsDirectory: URL {
+        let home = fileManager.homeDirectoryForCurrentUser
+        return home
             .appendingPathComponent("Library", isDirectory: true)
             .appendingPathComponent("Logs", isDirectory: true)
             .appendingPathComponent("Waystation", isDirectory: true)
     }
 
-    /// Checks if the launchd background agent plist is installed on this Mac.
-    public func isAgentInstalled() -> Bool {
+    /// Checks if the launchd plist file exists on disk.
+    public var isAgentInstalled: Bool {
         fileManager.fileExists(atPath: plistURL.path)
-    }
-
-    /// Ensures the installed launchd plist points to the current active executable path.
-    /// Prevents silent failures if the user moves Waystation.app (e.g. from Downloads to /Applications).
-    public func ensureAgentUpToDate() async {
-        guard isAgentInstalled(), let executablePath = Bundle.main.executablePath else { return }
-        if let content = try? String(contentsOf: plistURL, encoding: .utf8), !content.contains(executablePath) {
-            _ = await installAgent()
-        }
     }
 
     /// Synchronizes the background LaunchAgent state with app settings.
@@ -59,11 +56,12 @@ public actor LaunchdManager {
         guard let executablePath = Bundle.main.executablePath else { return false }
 
         do {
-            try fileManager.createDirectory(at: launchAgentsDirectory, withIntermediateDirectories: true)
-            try fileManager.createDirectory(at: logsDirectory, withIntermediateDirectories: true)
+            let launchAgentsDir = launchAgentsDirectory
+            let logsDir = logsDirectory
+            let targetPlistURL = plistURL
 
-            let stdoutLog = logsDirectory.appendingPathComponent("autoresign.log").path
-            let stderrLog = logsDirectory.appendingPathComponent("autoresign-error.log").path
+            let stdoutLog = logsDir.appendingPathComponent("autoresign.log").path
+            let stderrLog = logsDir.appendingPathComponent("autoresign-error.log").path
 
             // Calculate interval in seconds (default: 5 days = 432,000 seconds)
             let intervalSeconds = max(1, intervalDays) * 86400
@@ -97,12 +95,18 @@ public actor LaunchdManager {
             </plist>
             """
 
-            try plistContent.write(to: plistURL, atomically: true, encoding: .utf8)
+            // Perform disk I/O in detached task off cooperative thread pool
+            try await Task.detached {
+                let fm = FileManager.default
+                try fm.createDirectory(at: launchAgentsDir, withIntermediateDirectories: true)
+                try fm.createDirectory(at: logsDir, withIntermediateDirectories: true)
+                try plistContent.write(to: targetPlistURL, atomically: true, encoding: .utf8)
+            }.value
 
             // Unload previous instance if present, then load new agent
-            _ = try? await processRunner.run(command: "/bin/launchctl", arguments: ["unload", plistURL.path], onOutputLine: nil)
-            _ = try? await processRunner.run(command: "/bin/launchctl", arguments: ["load", plistURL.path], onOutputLine: nil)
-            return fileManager.fileExists(atPath: plistURL.path)
+            _ = try? await processRunner.run(command: "/bin/launchctl", arguments: ["unload", targetPlistURL.path], onOutputLine: nil)
+            _ = try? await processRunner.run(command: "/bin/launchctl", arguments: ["load", targetPlistURL.path], onOutputLine: nil)
+            return fileManager.fileExists(atPath: targetPlistURL.path)
         } catch {
             return false
         }

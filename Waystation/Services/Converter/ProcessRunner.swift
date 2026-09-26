@@ -18,7 +18,7 @@ public struct ProcessResult: Sendable {
 }
 
 /// Thread-safe actor coordinating subprocess execution conforming to AD-2.
-/// Eliminates deadlocks by draining pipe buffers asynchronously before awaiting termination.
+/// Streams process stdout and stderr using AsyncSequence (bytes.lines) to eliminate buffer boundary UTF-8 decoding loss.
 public actor ProcessRunner {
     public static let shared = ProcessRunner()
 
@@ -52,71 +52,54 @@ public actor ProcessRunner {
         process.standardOutput = outputPipe
         process.standardError = errorPipe
 
-        // Continuous streaming via readabilityHandler to prevent any pipe buffer overflow (64KB deadlock)
-        let stdoutCollector = SafeDataCollector()
-        let stderrCollector = SafeDataCollector()
+        try process.run()
 
-        outputPipe.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            guard !chunk.isEmpty else { return }
-            stdoutCollector.append(chunk)
+        let outHandle = outputPipe.fileHandleForReading
+        let errHandle = errorPipe.fileHandleForReading
 
-            if let onOutputLine = onOutputLine, let str = String(data: chunk, encoding: .utf8) {
-                let lines = str.components(separatedBy: .newlines)
-                for line in lines where !line.isEmpty {
-                    onOutputLine(line)
+        // Consume both stdout and stderr concurrently via AsyncSequence bytes.lines
+        // This guarantees complete lines and prevents UTF-8 multi-byte chunk truncation
+        let (stdout, stderr) = await withTaskGroup(of: (isError: Bool, text: String).self) { group in
+            group.addTask {
+                var collected: [String] = []
+                do {
+                    for try await line in outHandle.bytes.lines {
+                        collected.append(line)
+                        onOutputLine?(line)
+                    }
+                } catch {}
+                return (false, collected.joined(separator: "\n"))
+            }
+
+            group.addTask {
+                var collected: [String] = []
+                do {
+                    for try await line in errHandle.bytes.lines {
+                        collected.append(line)
+                        onOutputLine?(line)
+                    }
+                } catch {}
+                return (true, collected.joined(separator: "\n"))
+            }
+
+            var outStr = ""
+            var errStr = ""
+            for await result in group {
+                if result.isError {
+                    errStr = result.text
+                } else {
+                    outStr = result.text
                 }
             }
+            return (outStr, errStr)
         }
 
-        errorPipe.fileHandleForReading.readabilityHandler = { handle in
-            let chunk = handle.availableData
-            guard !chunk.isEmpty else { return }
-            stderrCollector.append(chunk)
-
-            if let onOutputLine = onOutputLine, let str = String(data: chunk, encoding: .utf8) {
-                let lines = str.components(separatedBy: .newlines)
-                for line in lines where !line.isEmpty {
-                    onOutputLine(line)
-                }
-            }
-        }
-
-        // Cooperative asynchronous wait on process termination
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            process.terminationHandler = { _ in
-                continuation.resume()
-            }
-
-            do {
-                try process.run()
-            } catch {
-                continuation.resume(throwing: error)
-            }
-        }
-
-        // Clean up readability handlers
-        outputPipe.fileHandleForReading.readabilityHandler = nil
-        errorPipe.fileHandleForReading.readabilityHandler = nil
-
-        // Drain any remaining bytes
-        let remainingOut = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        if !remainingOut.isEmpty {
-            stdoutCollector.append(remainingOut)
-        }
-
-        let remainingErr = errorPipe.fileHandleForReading.readDataToEndOfFile()
-        if !remainingErr.isEmpty {
-            stderrCollector.append(remainingErr)
-        }
-
-        let standardOutput = String(data: stdoutCollector.data, encoding: .utf8) ?? ""
-        let standardError = String(data: stderrCollector.data, encoding: .utf8) ?? ""
+        process.waitUntilExit()
 
         return ProcessResult(
             exitCode: process.terminationStatus,
-            standardOutput: standardOutput.trimmingCharacters(in: .newlines),
-            standardError: standardError.trimmingCharacters(in: .newlines)
+            standardOutput: stdout.trimmingCharacters(in: .newlines),
+            standardError: stderr.trimmingCharacters(in: .newlines)
         )
     }
 
@@ -138,24 +121,4 @@ public actor ProcessRunner {
             onOutputLine: onOutputLine
         )
     }
-}
-
-/// Thread-safe helper to collect data from readability handler blocks.
-private nonisolated final class SafeDataCollector: @unchecked Sendable {
-    private let lock = NSLock()
-    nonisolated(unsafe) private var internalData = Data()
-
-    var data: Data {
-        lock.lock()
-        defer { lock.unlock() }
-        return internalData
-    }
-
-    func append(_ chunk: Data) {
-        lock.lock()
-        defer { lock.unlock() }
-        internalData.append(chunk)
-    }
-
-    init() {}
 }

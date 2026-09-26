@@ -147,7 +147,7 @@ public actor SigningManager {
 
     /// Creates a temporary entitlements file containing the mandatory macOS App Sandbox entitlement.
     /// PlugInKit rejects all plug-ins without this entitlement ("plug-ins must be sandboxed").
-    private func createSandboxEntitlementsFile() -> URL? {
+    private func createSandboxEntitlementsFile() throws -> URL {
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("waystation-sandbox-\(UUID().uuidString).entitlements")
         let content = """
@@ -164,7 +164,7 @@ public actor SigningManager {
             try content.write(to: tempURL, atomically: true, encoding: .utf8)
             return tempURL
         } catch {
-            return nil
+            throw WaystationError.signingFailed(reason: "Eșec la crearea fișierului sandbox entitlements: \(error.localizedDescription)")
         }
     }
 
@@ -187,25 +187,21 @@ public actor SigningManager {
             throw WaystationError.signingFailed(reason: "Calea specificată nu există pe disc: \(targetURL.path)")
         }
 
-        let entitlementsURL = createSandboxEntitlementsFile()
+        let entitlementsURL = try createSandboxEntitlementsFile()
         defer {
-            if let entitlementsURL = entitlementsURL {
-                try? FileManager.default.removeItem(at: entitlementsURL)
-            }
+            try? FileManager.default.removeItem(at: entitlementsURL)
         }
 
         // 1. Sign any nested .appex extension plugin bundles inside Contents/PlugIns/ first
         let pluginsURL = targetURL.appendingPathComponent("Contents/PlugIns", isDirectory: true)
         if let contents = try? FileManager.default.contentsOfDirectory(at: pluginsURL, includingPropertiesForKeys: nil) {
             for item in contents where item.pathExtension == "appex" {
-                var appexArgs = [
+                let appexArgs = [
                     "--force",
-                    "--sign", resolvedIdentity
+                    "--sign", resolvedIdentity,
+                    "--entitlements", entitlementsURL.path,
+                    item.path
                 ]
-                if let entitlementsURL = entitlementsURL {
-                    appexArgs.append(contentsOf: ["--entitlements", entitlementsURL.path])
-                }
-                appexArgs.append(item.path)
 
                 let appexResult = try await processRunner.run(
                     command: "/usr/bin/codesign",
@@ -214,20 +210,18 @@ public actor SigningManager {
                 )
                 if !appexResult.isSuccess {
                     let err = appexResult.standardError.isEmpty ? appexResult.standardOutput : appexResult.standardError
-                    onOutputLine?("[Signing] Warning signing nested plugin '\(item.lastPathComponent)': \(err.trimmingCharacters(in: .whitespacesAndNewlines))")
+                    throw WaystationError.signingFailed(reason: "Eșec la semnarea plugin-ului nested '\(item.lastPathComponent)': \(err.trimmingCharacters(in: .whitespacesAndNewlines))")
                 }
             }
         }
 
         // 2. Sign the top-level container .app bundle
-        var arguments = [
+        let arguments = [
             "--force",
-            "--sign", resolvedIdentity
+            "--sign", resolvedIdentity,
+            "--entitlements", entitlementsURL.path,
+            targetURL.path
         ]
-        if let entitlementsURL = entitlementsURL {
-            arguments.append(contentsOf: ["--entitlements", entitlementsURL.path])
-        }
-        arguments.append(targetURL.path)
 
         let result = try await processRunner.run(
             command: "/usr/bin/codesign",

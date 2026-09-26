@@ -9,11 +9,11 @@ public struct StoreExtensionPayload: Identifiable, Sendable, Hashable {
 
     private static let idRegex = try? NSRegularExpression(pattern: "^[a-z]{32}$")
 
-    public init?(extensionId: String, title: String, storeURL: URL) {
+    public init(extensionId: String, title: String, storeURL: URL) throws {
         let cleanedId = extensionId.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard let regex = Self.idRegex,
               let _ = regex.firstMatch(in: cleanedId, range: NSRange(location: 0, length: cleanedId.utf16.count)) else {
-            return nil
+            throw WaystationError.downloadFailed(reason: "ID extensie Chrome invalid (sunt necesare 32 de caractere a-z): '\(extensionId)'")
         }
 
         self.extensionId = cleanedId

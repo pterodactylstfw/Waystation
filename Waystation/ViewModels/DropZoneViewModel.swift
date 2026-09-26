@@ -77,6 +77,14 @@ public final class DropZoneViewModel {
         isProcessing = false
     }
 
+    /// Handles file handed off from the Store tab or external intent, and automatically initiates conversion.
+    public func handleIngestedFileURL(_ url: URL) async {
+        await handleDroppedURLs([url])
+        if ingestedPackage != nil && !showIncompatibilitySheet {
+            await convertCurrentPackage()
+        }
+    }
+
     /// Triggers Safari Web Extension conversion for the current package.
     public func convertCurrentPackage() async {
         guard let package = ingestedPackage else { return }
@@ -87,14 +95,12 @@ public final class DropZoneViewModel {
         logDrawerViewModel.isStreaming = true
         logDrawerViewModel.append(line: "--- Initiating Conversion Pipeline ---")
 
-        let drawer = self.logDrawerViewModel
-
         do {
             let project = try await converterService.convert(
                 package: package
-            ) { line in
-                Task { @MainActor in
-                    drawer.append(line: line)
+            ) { [weak self] line in
+                Task { @MainActor [weak self] in
+                    self?.logDrawerViewModel.append(line: line)
                 }
             }
             self.convertedProject = project

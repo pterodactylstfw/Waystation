@@ -1,16 +1,10 @@
 import SwiftUI
 
 struct StoreView: View {
-    @State private var viewModel: StoreViewModel
+    @Bindable var viewModel: StoreViewModel
 
-    init(
-        logDrawerViewModel: LogDrawerViewModel? = nil,
-        onTriggerPipeline: ((URL) async -> Void)? = nil
-    ) {
-        _viewModel = State(initialValue: StoreViewModel(
-            logDrawerViewModel: logDrawerViewModel,
-            onTriggerPipeline: onTriggerPipeline
-        ))
+    init(viewModel: StoreViewModel) {
+        self.viewModel = viewModel
     }
 
     var body: some View {

@@ -5,79 +5,93 @@ import WebKit
 
 @Observable
 @MainActor
-final class StoreViewModel: Sendable {
-    static let homeURL = URL(string: "https://chromewebstore.google.com/category/extensions")!
+public final class StoreViewModel: Sendable {
+    public static let homeURL = URL(string: "https://chromewebstore.google.com/category/extensions")!
     private static let detailRegex = try? NSRegularExpression(pattern: "/detail/(?:([^/]+)/)?([a-z]{32})")
 
-    var currentURLString: String = "https://chromewebstore.google.com/category/extensions"
-    var inputURLString: String = ""
-    var pageTitle: String = ""
-    var canGoBack: Bool = false
-    var canGoForward: Bool = false
-    var isLoading: Bool = false
-    var estimatedProgress: Double = 0.0
+    public var currentURLString: String = "https://chromewebstore.google.com/category/extensions"
+    public var inputURLString: String = ""
+    public var pageTitle: String = ""
+    public var canGoBack: Bool = false
+    public var canGoForward: Bool = false
+    public var isLoading: Bool = false
+    public var estimatedProgress: Double = 0.0
 
     // Extension detail detected from current page
-    var activeExtensionDetail: StoreExtensionPayload?
+    public var activeExtensionDetail: StoreExtensionPayload?
 
     // Extension installation payload captured from "Add to Safari" button
-    var selectedExtension: StoreExtensionPayload?
-    var showInstallConfirmation: Bool = false
+    public var selectedExtension: StoreExtensionPayload?
+    public var showInstallConfirmation: Bool = false
 
     // Matches installed extension in Library (if already present)
-    var installedMatch: InstalledExtension?
+    public var installedMatch: InstalledExtension?
 
     // Download & pipeline state for Story 2.3
-    var isDownloading: Bool = false
-    var downloadProgress: Double = 0.0
-    var downloadErrorMessage: String?
-    var onTriggerPipeline: ((URL) async -> Void)?
+    public var isDownloading: Bool = false
+    public var downloadProgress: Double = 0.0
+    public var downloadErrorMessage: String?
+    public var onTriggerPipeline: (@MainActor @Sendable (URL) async -> Void)?
 
-    var logDrawerViewModel: LogDrawerViewModel?
+    public var logDrawerViewModel: LogDrawerViewModel?
 
-    // Navigation triggers observed by StoreWebView
-    var navigationAction: NavigationAction?
+    // Navigation triggers observed by StoreWebView with unique token to prevent infinite render loops
+    public var navigationAction: NavigationAction?
 
-    enum NavigationAction: Equatable {
-        case load(URL)
-        case goBack
-        case goForward
-        case reload
-        case stopLoading
+    public struct NavigationAction: Equatable, Sendable {
+        public let id: UUID
+        public let kind: Kind
+
+        public enum Kind: Equatable, Sendable {
+            case load(URL)
+            case goBack
+            case goForward
+            case reload
+            case stopLoading
+        }
+
+        public static func load(_ url: URL) -> NavigationAction { .init(id: UUID(), kind: .load(url)) }
+        public static var goBack: NavigationAction { .init(id: UUID(), kind: .goBack) }
+        public static var goForward: NavigationAction { .init(id: UUID(), kind: .goForward) }
+        public static var reload: NavigationAction { .init(id: UUID(), kind: .reload) }
+        public static var stopLoading: NavigationAction { .init(id: UUID(), kind: .stopLoading) }
     }
 
-    init(logDrawerViewModel: LogDrawerViewModel? = nil, onTriggerPipeline: ((URL) async -> Void)? = nil) {
+    public init(
+        logDrawerViewModel: LogDrawerViewModel? = nil,
+        onTriggerPipeline: (@MainActor @Sendable (URL) async -> Void)? = nil
+    ) {
         self.logDrawerViewModel = logDrawerViewModel
         self.onTriggerPipeline = onTriggerPipeline
         self.inputURLString = Self.homeURL.absoluteString
     }
 
-    func goBack() {
+    public func goBack() {
         navigationAction = .goBack
     }
 
-    func goForward() {
+    public func goForward() {
         navigationAction = .goForward
     }
 
-    func reload() {
+    public func reload() {
         navigationAction = .reload
     }
 
-    func stopLoading() {
+    public func stopLoading() {
         navigationAction = .stopLoading
     }
 
-    func goHome() {
+    public func goHome() {
         navigateTo(url: Self.homeURL)
     }
 
-    func navigateTo(url: URL) {
+    public func navigateTo(url: URL) {
         navigationAction = .load(url)
         inputURLString = url.absoluteString
     }
 
-    func handleSubmit() {
+    public func handleSubmit() {
         let trimmed = inputURLString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
@@ -96,7 +110,7 @@ final class StoreViewModel: Sendable {
         }
     }
 
-    func updateState(url: URL?, title: String?, canGoBack: Bool, canGoForward: Bool, isLoading: Bool, progress: Double) {
+    public func updateState(url: URL?, title: String?, canGoBack: Bool, canGoForward: Bool, isLoading: Bool, progress: Double) {
         if let url = url {
             // Guard against Themes category: auto-redirect back to Extensions
             if url.path.contains("/category/themes") {
@@ -146,14 +160,14 @@ final class StoreViewModel: Sendable {
             title = pageTitle.replacingOccurrences(of: " - Chrome Web Store", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
-        self.activeExtensionDetail = StoreExtensionPayload(extensionId: extId, title: title, storeURL: url)
+        self.activeExtensionDetail = try? StoreExtensionPayload(extensionId: extId, title: title, storeURL: url)
         Task {
             self.installedMatch = await findInstalledExtension(title: title, extId: extId)
         }
     }
 
     /// Checks if the extension is already present in the local Library registry
-    func findInstalledExtension(title: String, extId: String) async -> InstalledExtension? {
+    public func findInstalledExtension(title: String, extId: String) async -> InstalledExtension? {
         guard let installed = try? await ExtensionRegistry.shared.loadAll() else { return nil }
 
         let normalize: (String) -> String = { text in
@@ -188,7 +202,7 @@ final class StoreViewModel: Sendable {
         }
     }
 
-    func handleAddToSafari(payload: StoreExtensionPayload) {
+    public func handleAddToSafari(payload: StoreExtensionPayload) {
         self.selectedExtension = payload
         self.showInstallConfirmation = true
         if let match = self.installedMatch {
@@ -204,7 +218,7 @@ final class StoreViewModel: Sendable {
     }
 
     /// Downloads the CRX binary and triggers the automated Safari conversion pipeline.
-    func startDownloadAndPipeline(payload: StoreExtensionPayload) async {
+    public func startDownloadAndPipeline(payload: StoreExtensionPayload) async {
         isDownloading = true
         downloadProgress = 0.0
         downloadErrorMessage = nil
@@ -214,9 +228,9 @@ final class StoreViewModel: Sendable {
         do {
             let crxURL = try await CRXDownloader.shared.downloadCRX(
                 extensionId: payload.extensionId
-            ) { [self] progress in
-                Task { @MainActor in
-                    self.downloadProgress = progress
+            ) { [weak self] progress in
+                Task { @MainActor [weak self] in
+                    self?.downloadProgress = progress
                 }
             }
             logDrawerViewModel?.append(line: "[Store] CRX download completed: \(crxURL.path)")

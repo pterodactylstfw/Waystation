@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Main container view coordinating the 3-tab layout, Doctor environment banner, and live log drawer.
-/// Styled with macOS 26/27 Liquid Glass translucent ambient materials.
+/// Conforms to AD-1 and integrates Story 1.1, Story 1.4, Story 2.1, and Story 3.1.
 public struct MainView: View {
     @State private var appState = AppState()
 
@@ -15,18 +15,18 @@ public struct MainView: View {
                 DoctorBannerView(appState: appState)
 
                 TabView(selection: $appState.selectedTab) {
-                    StoreView(
-                        logDrawerViewModel: appState.logDrawerViewModel,
-                        onTriggerPipeline: { crxURL in
-                            await appState.triggerConversionPipeline(for: crxURL)
+                    StoreView(viewModel: appState.storeViewModel)
+                        .tabItem {
+                            Label(AppTab.store.rawValue, systemImage: AppTab.store.iconName)
+                        }
+                        .tag(AppTab.store)
+
+                    DropZoneView(
+                        viewModel: appState.dropZoneViewModel,
+                        onGoToLibrary: {
+                            appState.selectedTab = .library
                         }
                     )
-                    .tabItem {
-                        Label(AppTab.store.rawValue, systemImage: AppTab.store.iconName)
-                    }
-                    .tag(AppTab.store)
-
-                    DropZoneView(viewModel: appState.dropZoneViewModel)
                         .tabItem {
                             Label(AppTab.dropZone.rawValue, systemImage: AppTab.dropZone.iconName)
                         }
@@ -44,6 +44,7 @@ public struct MainView: View {
                     .tag(AppTab.library)
                 }
 
+                // Live Log Drawer pinned to bottom (Story 1.4 / AD-1)
                 LogDrawerView(viewModel: appState.logDrawerViewModel)
             }
         }
@@ -65,6 +66,7 @@ public struct MainView: View {
             appState.showHelpGuide = true
         }
         .task {
+            // Verify developer environment when launching the app
             await appState.checkEnvironment()
         }
     }

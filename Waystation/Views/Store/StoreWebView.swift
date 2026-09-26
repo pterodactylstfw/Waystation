@@ -62,14 +62,15 @@ struct StoreWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        guard let action = viewModel.navigationAction else { return }
-
-        // Clear action on next tick so state isn't mutated synchronously during render
-        DispatchQueue.main.async {
-            self.viewModel.navigationAction = nil
+        guard let action = viewModel.navigationAction,
+              context.coordinator.lastHandledActionId != action.id else {
+            return
         }
 
-        switch action {
+        // Mark this action as handled to prevent secondary render loops
+        context.coordinator.lastHandledActionId = action.id
+
+        switch action.kind {
         case .load(let url):
             if context.coordinator.lastLoadedURL != url {
                 context.coordinator.lastLoadedURL = url
@@ -93,6 +94,7 @@ struct StoreWebView: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
         var viewModel: StoreViewModel
         var lastLoadedURL: URL?
+        var lastHandledActionId: UUID?
         private var observations: [NSKeyValueObservation] = []
 
         init(viewModel: StoreViewModel) {
@@ -107,13 +109,19 @@ struct StoreWebView: NSViewRepresentable {
                   let extensionId = body["extensionId"] as? String,
                   let title = body["title"] as? String,
                   let urlString = body["url"] as? String,
-                  let storeURL = URL(string: urlString),
-                  let payload = StoreExtensionPayload(extensionId: extensionId, title: title, storeURL: storeURL) else {
+                  let storeURL = URL(string: urlString) else {
                 return
             }
 
-            Task { @MainActor in
-                self.viewModel.handleAddToSafari(payload: payload)
+            do {
+                let payload = try StoreExtensionPayload(extensionId: extensionId, title: title, storeURL: storeURL)
+                Task { @MainActor in
+                    self.viewModel.handleAddToSafari(payload: payload)
+                }
+            } catch {
+                Task { @MainActor in
+                    self.viewModel.downloadErrorMessage = error.localizedDescription
+                }
             }
         }
 
@@ -219,86 +227,26 @@ struct StoreWebView: NSViewRepresentable {
                 return
             }
 
-            // Only intercept user-activated link clicks (never iframes, background proxies, or scripts)
-            if navigationAction.navigationType == .linkActivated, let host = url.host {
-                // If it's an external website clicked by user (like YouTube, GitHub, dev sites), open in default browser
-                if !isInternalStoreOrGoogleHost(host) && (url.scheme == "http" || url.scheme == "https") {
-                    NSWorkspace.shared.open(url)
-                    decisionHandler(.cancel)
-                    return
-                }
+            // Always allow about:blank or internal custom schemes
+            if url.scheme == "about" || url.scheme == "data" {
+                decisionHandler(.allow)
+                return
             }
 
-            // Handle target="_blank" links within the same webview
-            if navigationAction.targetFrame == nil {
-                lastLoadedURL = url
-                webView.load(URLRequest(url: url))
+            // If it's a Chrome Web Store internal or Google auth URL, load inside WKWebView
+            if let host = url.host, isInternalStoreOrGoogleHost(host) {
+                decisionHandler(.allow)
+                return
+            }
+
+            // Otherwise, open external links (developer websites, privacy policies, etc.) in the user's default browser
+            if navigationAction.navigationType == .linkActivated {
+                NSWorkspace.shared.open(url)
                 decisionHandler(.cancel)
                 return
             }
+
             decisionHandler(.allow)
-        }
-
-        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-            Task { @MainActor in
-                viewModel.isLoading = true
-            }
-        }
-
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            lastLoadedURL = webView.url
-            Task { @MainActor in
-                viewModel.isLoading = false
-                viewModel.updateState(
-                    url: webView.url,
-                    title: webView.title,
-                    canGoBack: webView.canGoBack,
-                    canGoForward: webView.canGoForward,
-                    isLoading: false,
-                    progress: 1.0
-                )
-
-                await self.injectInstalledExtensions(into: webView)
-            }
-            // Re-evaluate script to ensure dynamic injection kicks in
-            webView.evaluateJavaScript(WebStoreScript.scriptSource, completionHandler: nil)
-        }
-
-        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            if (error as NSError).code == NSURLErrorCancelled {
-                return
-            }
-            Task { @MainActor in
-                viewModel.isLoading = false
-            }
-        }
-
-        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            if (error as NSError).code == NSURLErrorCancelled {
-                return
-            }
-            Task { @MainActor in
-                viewModel.isLoading = false
-            }
-        }
-
-        // Handle target="_blank" links / window.open within the same webview or external browser
-        func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
-            guard let url = navigationAction.request.url, url.absoluteString != "about:blank" else {
-                return nil
-            }
-
-            // Only forward to external browser if the user explicitly clicked a link to an external non-Google site
-            if navigationAction.navigationType == .linkActivated, let host = url.host {
-                if !isInternalStoreOrGoogleHost(host) && (url.scheme == "http" || url.scheme == "https") {
-                    NSWorkspace.shared.open(url)
-                    return nil
-                }
-            }
-
-            lastLoadedURL = url
-            webView.load(URLRequest(url: url))
-            return nil
         }
     }
 }

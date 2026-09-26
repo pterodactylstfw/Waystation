@@ -1,19 +1,26 @@
 import Foundation
 
-/// Service coordinating the conversion of WebExtension packages into native Safari Web Extension Xcode projects.
-/// Conforms to AD-2, AD-3, AD-4, and Story 1.5 acceptance criteria.
-public struct ConverterService: Sendable {
-    public nonisolated static let shared = ConverterService()
+/// Service orchestrating the transformation of an ingested extension package into an Xcode project
+/// using Apple's official `safari-web-extension-converter` tool.
+/// Conforms strictly to AD-1 (Architecture Spine) and AD-2 (Isolated Process Execution).
+public actor ConverterService {
+    public static let shared = ConverterService()
 
     private let processRunner: ProcessRunner
     private let fileManager = FileManager.default
-    private let lsregisterPath = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 
-    public nonisolated init(processRunner: ProcessRunner = .shared) {
+    public init(processRunner: ProcessRunner = .shared) {
         self.processRunner = processRunner
     }
 
-    /// Converts an ingested package into a native Xcode project and compiles the container app.
+    /// Converts a validated extension package into an Xcode project.
+    ///
+    /// - Parameters:
+    ///   - package: The validated extension package containing staged files.
+    ///   - destinationURL: Optional custom destination directory. Defaults to standard caches.
+    ///   - bundleIdentifier: Optional custom bundle identifier. If nil, defaults to `org.waystation.ext.<sanitized-name>`.
+    ///   - onOutputLine: Callback streamed line-by-line from the CLI process for the Log Drawer.
+    /// - Returns: A `ConvertedProject` value describing the generated project paths.
     public func convert(
         package: IngestedPackage,
         destinationURL: URL? = nil,
@@ -52,13 +59,12 @@ public struct ConverterService: Sendable {
             "--app-name", cleanAppName,
             "--bundle-identifier", resolvedBundleID,
             "--swift",
-            "--macos-only",
-            "--copy-resources",
             "--no-open",
             "--no-prompt",
             "--force"
         ]
 
+        // Cooperative asynchronous process execution (AD-2)
         let result = try await processRunner.run(
             command: "/usr/bin/xcrun",
             arguments: arguments,
@@ -84,7 +90,7 @@ public struct ConverterService: Sendable {
         onOutputLine?("Conversion succeeded! Xcode project ready at: \(xcodeProjURL.path)")
 
         // 5. Patch project.pbxproj to fix macOS deployment target and bundle ID mismatch
-        patchXcodeProject(at: xcodeProjURL, appName: cleanAppName, bundleID: resolvedBundleID)
+        try patchXcodeProject(at: xcodeProjURL, appName: cleanAppName, bundleID: resolvedBundleID)
 
         // 6. Build the container .app bundle and copy to ~/Library/Application Support/Waystation/Extensions/
         var containerAppURL: URL?
@@ -108,9 +114,17 @@ public struct ConverterService: Sendable {
         )
     }
 
-    private func patchXcodeProject(at projectURL: URL, appName: String, bundleID: String) {
+    private func patchXcodeProject(at projectURL: URL, appName: String, bundleID: String) throws {
         let pbxprojURL = projectURL.appendingPathComponent("project.pbxproj")
-        guard let content = try? String(contentsOf: pbxprojURL, encoding: .utf8) else { return }
+        let content: String
+        do {
+            content = try String(contentsOf: pbxprojURL, encoding: .utf8)
+        } catch {
+            throw WaystationError.conversionFailed(
+                reason: "Eșec la citirea project.pbxproj din '\(pbxprojURL.path)': \(error.localizedDescription)",
+                exitCode: 1
+            )
+        }
 
         var updated = content.replacingOccurrences(
             of: "MACOSX_DEPLOYMENT_TARGET = 10.14;",
@@ -143,7 +157,14 @@ public struct ConverterService: Sendable {
         }
         updated = lines.joined(separator: "\n")
 
-        try? updated.write(to: pbxprojURL, atomically: true, encoding: .utf8)
+        do {
+            try updated.write(to: pbxprojURL, atomically: true, encoding: .utf8)
+        } catch {
+            throw WaystationError.conversionFailed(
+                reason: "Eșec la salvarea modificărilor în project.pbxproj: \(error.localizedDescription)",
+                exitCode: 1
+            )
+        }
     }
 
     private func buildAndStageContainerApp(
@@ -155,11 +176,21 @@ public struct ConverterService: Sendable {
 
         let signingIdentity = await SigningManager.shared.detectSigningIdentity(onOutputLine: onOutputLine)
 
+        // Discover the actual macOS scheme name. Apple's safari-web-extension-converter
+        // generates schemes with platform suffixes like "AppName (macOS)" and "AppName (iOS)"
+        // rather than bare "AppName", causing xcodebuild to fail with "does not contain a scheme".
+        let schemeName = await discoverMacOSScheme(projectURL: projectURL, appName: appName, onOutputLine: onOutputLine)
+        onOutputLine?("[Build] Using scheme: '\(schemeName)'")
+
         // Isolated temporary DerivedData directory to avoid polluting global Xcode cache
         // and prevent Safari from discovering duplicate intermediate build artifacts.
         let tempDerivedDataURL = fileManager.temporaryDirectory
             .appendingPathComponent("WaystationBuild-\(UUID().uuidString)", isDirectory: true)
-        try? fileManager.createDirectory(at: tempDerivedDataURL, withIntermediateDirectories: true)
+        do {
+            try fileManager.createDirectory(at: tempDerivedDataURL, withIntermediateDirectories: true)
+        } catch {
+            throw WaystationError.projectBuildFailed(reason: "Eșec la crearea folderului temporar de build: \(error.localizedDescription)")
+        }
 
         defer {
             // Clean up temporary build directory when staging finishes
@@ -168,7 +199,7 @@ public struct ConverterService: Sendable {
 
         let buildArgs = [
             "-project", projectURL.path,
-            "-scheme", appName,
+            "-scheme", schemeName,
             "-destination", "platform=macOS",
             "-configuration", "Release",
             "-derivedDataPath", tempDerivedDataURL.path,
@@ -197,7 +228,11 @@ public struct ConverterService: Sendable {
             .appendingPathComponent("Waystation", isDirectory: true)
             .appendingPathComponent("Extensions", isDirectory: true)
 
-        try? fileManager.createDirectory(at: extensionsDir, withIntermediateDirectories: true)
+        do {
+            try fileManager.createDirectory(at: extensionsDir, withIntermediateDirectories: true)
+        } catch {
+            throw WaystationError.projectBuildFailed(reason: "Eșec la crearea folderului de extensii din Application Support: \(error.localizedDescription)")
+        }
         let destinationAppURL = extensionsDir.appendingPathComponent("\(appName).app")
 
         // 1. Locate built .app inside the isolated temporary build folder
@@ -219,9 +254,10 @@ public struct ConverterService: Sendable {
 
         // 2. Fallback: also check global DerivedData if something unexpected occurred
         if foundAppURL == nil {
-            let derivedDataBase = fileManager.homeDirectoryForCurrentUser
-                .appendingPathComponent("Library/Developer/Xcode/DerivedData")
-            if let enumerator = fileManager.enumerator(at: derivedDataBase, includingPropertiesForKeys: nil) {
+            let globalDerivedData = fileManager.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Developer/Xcode/DerivedData", isDirectory: true)
+
+            if let enumerator = fileManager.enumerator(at: globalDerivedData, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles]) {
                 while let fileURL = enumerator.nextObject() as? URL {
                     if fileURL.pathExtension == "app" && fileURL.lastPathComponent == "\(appName).app" {
                         foundAppURL = fileURL
@@ -231,77 +267,51 @@ public struct ConverterService: Sendable {
             }
         }
 
-        if let builtApp = foundAppURL {
-            if fileManager.fileExists(atPath: destinationAppURL.path) {
-                try? fileManager.removeItem(at: destinationAppURL)
-            }
-            try fileManager.copyItem(at: builtApp, to: destinationAppURL)
-            onOutputLine?("[Build] Staged container app to '\(destinationAppURL.path)'.")
-
-            // Re-sign with mandatory app-sandbox entitlement so PlugInKit and Safari accept the plugin
-            do {
-                try await SigningManager.shared.sign(
-                    targetURL: destinationAppURL,
-                    identity: signingIdentity,
-                    onOutputLine: onOutputLine
-                )
-            } catch {
-                onOutputLine?("[Signing] Warning re-signing container: \(error.localizedDescription)")
-            }
-
-            // Unregister the intermediate build copy from LaunchServices so Safari does not show duplicates
-            _ = try? await processRunner.run(
-                command: lsregisterPath,
-                arguments: ["-u", builtApp.path],
-                onOutputLine: nil
-            )
-
-            // Register the newly staged .app in Application Support with LaunchServices
-            _ = try? await processRunner.run(
-                command: lsregisterPath,
-                arguments: ["-f", destinationAppURL.path],
-                onOutputLine: nil
-            )
-
-            // Register extension plugin(s) with PlugInKit
-            let pluginsDir = destinationAppURL.appendingPathComponent("Contents/PlugIns")
-            if let plugins = try? fileManager.contentsOfDirectory(at: pluginsDir, includingPropertiesForKeys: nil) {
-                for plugin in plugins where plugin.pathExtension == "appex" {
-                    _ = try? await processRunner.run(
-                        command: "/usr/bin/pluginkit",
-                        arguments: ["-a", plugin.path],
-                        onOutputLine: nil
-                    )
-                }
-            }
-
-            // Auto-launch Safari once if setting enabled (AD-1)
-            let shouldAutoLaunch = await AppSettings.shared.autoOpenSafariOnInstall
-            if shouldAutoLaunch {
-                onOutputLine?("[Build] Launching Safari...")
-                _ = try? await processRunner.run(
-                    command: "/usr/bin/open",
-                    arguments: ["-a", "Safari"],
-                    onOutputLine: nil
-                )
-            }
-
-            return destinationAppURL
+        guard let sourceAppURL = foundAppURL else {
+            onOutputLine?("[Build] Note: Could not locate compiled container .app in build directory. Extension can still be launched via Xcode.")
+            return nil
         }
 
-        return nil
+        // 3. Stage .app into Application Support/Waystation/Extensions/
+        if fileManager.fileExists(atPath: destinationAppURL.path) {
+            try? fileManager.removeItem(at: destinationAppURL)
+        }
+
+        try fileManager.copyItem(at: sourceAppURL, to: destinationAppURL)
+        onOutputLine?("[Build] Successfully staged container .app at: \(destinationAppURL.path)")
+
+        // 4. Sign both .appex and .app bundles in place using SigningManager
+        do {
+            try await SigningManager.shared.sign(targetURL: destinationAppURL, onOutputLine: onOutputLine)
+        } catch {
+            onOutputLine?("[Build] Warning: Immediate post-build signing failed: \(error.localizedDescription)")
+        }
+
+        // 5. Register with macOS LaunchServices so Safari immediately recognizes the extension
+        let lsregisterPath = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
+        if fileManager.fileExists(atPath: lsregisterPath) {
+            _ = try await processRunner.run(
+                command: lsregisterPath,
+                arguments: ["-f", "-R", destinationAppURL.path],
+                onOutputLine: nil
+            )
+            onOutputLine?("[Build] Registered container app with macOS LaunchServices.")
+        }
+
+        return destinationAppURL
     }
 
-    private func findXcodeProject(in directory: URL) -> URL? {
+    /// Recursively searches for an `.xcodeproj` directory within the given root URL.
+    private func findXcodeProject(in rootURL: URL) -> URL? {
         guard let enumerator = fileManager.enumerator(
-            at: directory,
+            at: rootURL,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: [.skipsHiddenFiles]
         ) else {
             return nil
         }
 
-        while let fileURL = enumerator.nextObject() as? URL {
+        for case let fileURL as URL in enumerator {
             if fileURL.pathExtension == "xcodeproj" {
                 return fileURL
             }
@@ -309,17 +319,82 @@ public struct ConverterService: Sendable {
         return nil
     }
 
-    private func sanitizeAppName(_ raw: String) -> String {
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " -_"))
-        let filtered = raw.unicodeScalars.filter { allowed.contains($0) }
-        let clean = String(String.UnicodeScalarView(filtered)).trimmingCharacters(in: .whitespaces)
-        return clean.isEmpty ? "Safari Extension" : clean
+    /// Cleans an app name to ensure safe paths and scheme names.
+    private func sanitizeAppName(_ name: String) -> String {
+        let cleaned = name.replacingOccurrences(of: " ", with: "")
+            .filter { $0.isLetter || $0.isNumber }
+        return cleaned.isEmpty ? "ConvertedExtension" : cleaned
     }
 
-    private func sanitizeBundleID(_ raw: String) -> String {
-        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".-_"))
-        let filtered = raw.unicodeScalars.filter { allowed.contains($0) }
-        let clean = String(String.UnicodeScalarView(filtered)).lowercased()
-        return clean.isEmpty ? "extension" : clean
+    /// Cleans a bundle identifier slug to strictly conform to reverse-DNS requirements.
+    private func sanitizeBundleID(_ name: String) -> String {
+        let alphanumeric = name.lowercased().filter { $0.isLetter || $0.isNumber }
+        return alphanumeric.isEmpty ? "extension" : alphanumeric
+    }
+
+    /// Discovers the actual macOS scheme name from the generated Xcode project.
+    ///
+    /// Apple's `safari-web-extension-converter` generates schemes with platform suffixes
+    /// (e.g. "DarkReader (macOS)", "DarkReader (iOS)") rather than the bare app name.
+    /// This function runs `xcodebuild -list` and parses the output to find the correct macOS scheme.
+    ///
+    /// Falls back to the bare `appName` if scheme discovery fails.
+    private func discoverMacOSScheme(
+        projectURL: URL,
+        appName: String,
+        onOutputLine: (@Sendable (String) -> Void)?
+    ) async -> String {
+        do {
+            let listResult = try await processRunner.run(
+                command: "/usr/bin/xcodebuild",
+                arguments: ["-project", projectURL.path, "-list"],
+                onOutputLine: nil
+            )
+
+            guard listResult.isSuccess else {
+                onOutputLine?("[Build] Warning: Could not list project schemes, falling back to '\(appName)'")
+                return appName
+            }
+
+            // Parse xcodebuild -list output to extract scheme names
+            // The output format is:
+            //     Schemes:
+            //         DarkReader (iOS)
+            //         DarkReader (macOS)
+            let output = listResult.standardOutput
+            let lines = output.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+
+            var inSchemesSection = false
+            var schemes: [String] = []
+
+            for line in lines {
+                if line.hasPrefix("Schemes:") {
+                    inSchemesSection = true
+                    continue
+                }
+                if inSchemesSection {
+                    if line.isEmpty || line.hasSuffix(":") {
+                        break
+                    }
+                    schemes.append(line)
+                }
+            }
+
+            // Priority: prefer "(macOS)" scheme, then any scheme containing the app name, then first available
+            if let macOSScheme = schemes.first(where: { $0.contains("(macOS)") }) {
+                return macOSScheme
+            }
+            if let matchingScheme = schemes.first(where: { $0.contains(appName) }) {
+                return matchingScheme
+            }
+            if let firstScheme = schemes.first {
+                onOutputLine?("[Build] Warning: No macOS-specific scheme found. Using '\(firstScheme)'")
+                return firstScheme
+            }
+        } catch {
+            onOutputLine?("[Build] Warning: Scheme discovery failed: \(error.localizedDescription)")
+        }
+
+        return appName
     }
 }

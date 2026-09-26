@@ -8,9 +8,7 @@ public struct LogEntry: Identifiable, Sendable, Equatable {
     public let isError: Bool
 
     public nonisolated var formattedTime: String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss"
-        return formatter.string(from: timestamp)
+        timestamp.formatted(.dateTime.hour().minute().second())
     }
 
     public nonisolated init(

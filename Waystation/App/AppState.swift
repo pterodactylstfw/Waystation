@@ -1,7 +1,8 @@
 import SwiftUI
+import Observation
 
-/// Top-level tabs available in Waystation.
-public enum AppTab: String, CaseIterable, Identifiable, Sendable {
+/// Unified navigation tabs supported by the application shell.
+public enum AppTab: String, CaseIterable, Identifiable {
     case store = "Store"
     case dropZone = "Drop Zone"
     case library = "Library"
@@ -10,9 +11,9 @@ public enum AppTab: String, CaseIterable, Identifiable, Sendable {
 
     public var iconName: String {
         switch self {
-        case .store: return "globe"
-        case .dropZone: return "arrow.down.doc.fill"
-        case .library: return "square.grid.2x2.fill"
+        case .store: return "bag"
+        case .dropZone: return "arrow.down.doc"
+        case .library: return "square.grid.2x2"
         }
     }
 }
@@ -22,7 +23,7 @@ public extension Notification.Name {
 }
 
 /// Central application state coordinator conforming to AD-1.
-/// Managed on `@MainActor` with `@Observable` macros (no Combine).
+/// Manages global navigation, environment checks, and child view models.
 @Observable
 @MainActor
 public final class AppState {
@@ -35,6 +36,7 @@ public final class AppState {
     public var logDrawerViewModel: LogDrawerViewModel
     public var dropZoneViewModel: DropZoneViewModel
     public var libraryViewModel: LibraryViewModel
+    public var storeViewModel: StoreViewModel
 
     /// Whether the warning banner should appear (if Command Line Tools are missing)
     public var showDoctorWarning: Bool {
@@ -45,23 +47,26 @@ public final class AppState {
     private let doctorService: DoctorService
 
     public init(
-        doctorService: DoctorService = .shared
-    ) {
-        let drawer = LogDrawerViewModel.shared
-        self.doctorService = doctorService
-        self.logDrawerViewModel = drawer
-        self.dropZoneViewModel = DropZoneViewModel(logDrawerViewModel: drawer)
-        self.libraryViewModel = LibraryViewModel(logDrawerViewModel: drawer)
-    }
-
-    public init(
-        doctorService: DoctorService,
-        logDrawerViewModel: LogDrawerViewModel
+        doctorService: DoctorService = .shared,
+        logDrawerViewModel: LogDrawerViewModel = .shared,
+        dropZoneViewModel: DropZoneViewModel? = nil,
+        libraryViewModel: LibraryViewModel? = nil,
+        storeViewModel: StoreViewModel? = nil
     ) {
         self.doctorService = doctorService
         self.logDrawerViewModel = logDrawerViewModel
-        self.dropZoneViewModel = DropZoneViewModel(logDrawerViewModel: logDrawerViewModel)
-        self.libraryViewModel = LibraryViewModel(logDrawerViewModel: logDrawerViewModel)
+        self.dropZoneViewModel = dropZoneViewModel ?? DropZoneViewModel(logDrawerViewModel: logDrawerViewModel)
+        self.libraryViewModel = libraryViewModel ?? LibraryViewModel(logDrawerViewModel: logDrawerViewModel)
+
+        if let storeViewModel = storeViewModel {
+            self.storeViewModel = storeViewModel
+        } else {
+            let store = StoreViewModel(logDrawerViewModel: logDrawerViewModel)
+            self.storeViewModel = store
+            store.onTriggerPipeline = { [weak self] crxURL in
+                await self?.triggerConversionPipeline(for: crxURL)
+            }
+        }
     }
 
     /// Verifies system developer prerequisites.
@@ -81,19 +86,16 @@ public final class AppState {
             copiedCommandToast = true
         }
         Task {
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
             withAnimation {
                 self.copiedCommandToast = false
             }
         }
     }
 
-    /// Ingests a downloaded package from Store and automatically launches the conversion pipeline.
-    public func triggerConversionPipeline(for sourceURL: URL) async {
+    /// Triggers automated pipeline execution from Store tab download (Story 2.3).
+    public func triggerConversionPipeline(for crxURL: URL) async {
         selectedTab = .dropZone
-        await dropZoneViewModel.handleDroppedURLs([sourceURL])
-        if dropZoneViewModel.ingestedPackage != nil && !dropZoneViewModel.showIncompatibilitySheet {
-            await dropZoneViewModel.convertCurrentPackage()
-        }
+        await dropZoneViewModel.handleIngestedFileURL(crxURL)
     }
 }
