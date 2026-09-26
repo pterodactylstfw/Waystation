@@ -13,6 +13,10 @@
 
 [Download (v1.1.2)](https://github.com/pterodactylstfw/Waystation/releases/latest) · [Getting Started](#getting-started) · [Building From Source](#building-from-source)
 
+<br/>
+
+https://github.com/user-attachments/assets/waystation_demo.mp4
+
 </div>
 
 ---
