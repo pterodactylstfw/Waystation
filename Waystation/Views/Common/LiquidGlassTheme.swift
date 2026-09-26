@@ -1,7 +1,10 @@
 import SwiftUI
 
-// MARK: - Liquid Glass Design System (macOS 26/27)
-/// Futuristic frosted glass materials, specular rim highlights, and ambient luminance.
+// MARK: - Liquid Glass Design System
+// macOS 26+: Uses Apple's native Glass and .glassEffect() API
+// macOS 14-15: Falls back to frosted material simulation with specular highlights
+
+// MARK: - Glass Intensity
 
 public enum LiquidGlassIntensity: Sendable {
     case subtle
@@ -37,32 +40,104 @@ public enum LiquidGlassIntensity: Sendable {
     }
 }
 
+// MARK: - Unified Glass Modifier
+
+/// Applies native Apple Liquid Glass on macOS 26+ via `.glassEffect()`,
+/// falling back to a frosted material simulation on older systems.
 public struct LiquidGlassModifier: ViewModifier {
     public let cornerRadius: CGFloat
     public let intensity: LiquidGlassIntensity
     public let tintColor: Color?
+    public let isInteractive: Bool
 
-    public init(cornerRadius: CGFloat = 16, intensity: LiquidGlassIntensity = .standard, tintColor: Color? = nil) {
+    public init(
+        cornerRadius: CGFloat = 16,
+        intensity: LiquidGlassIntensity = .standard,
+        tintColor: Color? = nil,
+        isInteractive: Bool = false
+    ) {
         self.cornerRadius = cornerRadius
         self.intensity = intensity
         self.tintColor = tintColor
+        self.isInteractive = isInteractive
     }
 
     public func body(content: Content) -> some View {
+        if #available(macOS 26, *) {
+            content
+                .modifier(NativeGlassModifier(
+                    cornerRadius: cornerRadius,
+                    intensity: intensity,
+                    tintColor: tintColor,
+                    isInteractive: isInteractive
+                ))
+        } else {
+            content
+                .modifier(FallbackGlassModifier(
+                    cornerRadius: cornerRadius,
+                    intensity: intensity,
+                    tintColor: tintColor
+                ))
+        }
+    }
+}
+
+// MARK: - Native macOS 26+ Liquid Glass
+
+@available(macOS 26, *)
+private struct NativeGlassModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    let intensity: LiquidGlassIntensity
+    let tintColor: Color?
+    let isInteractive: Bool
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        let resolvedGlass: Glass = {
+            var glass: Glass = {
+                switch intensity {
+                case .subtle:
+                    return .clear
+                case .standard, .prominent:
+                    return .regular
+                case .interactive:
+                    return .regular.interactive()
+                }
+            }()
+
+            if let tint = tintColor {
+                glass = glass.tint(tint)
+            }
+            if isInteractive && intensity != .interactive {
+                glass = glass.interactive()
+            }
+            return glass
+        }()
+
+        return content
+            .glassEffect(resolvedGlass, in: shape)
+    }
+}
+
+// MARK: - Fallback Glass (macOS 14-15)
+
+private struct FallbackGlassModifier: ViewModifier {
+    let cornerRadius: CGFloat
+    let intensity: LiquidGlassIntensity
+    let tintColor: Color?
+
+    func body(content: Content) -> some View {
         content
             .background {
                 ZStack {
-                    // 1. Frosted Material Layer
                     RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                         .fill(intensity.blurMaterial)
 
-                    // 2. Optional Ambient Tint Glow
                     if let tint = tintColor {
                         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                             .fill(tint.opacity(0.08))
                     }
 
-                    // 3. Specular Light Glaze
                     LinearGradient(
                         colors: [
                             Color.white.opacity(0.08),
@@ -77,7 +152,6 @@ public struct LiquidGlassModifier: ViewModifier {
             }
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .overlay {
-                // Dual-rim light refraction stroke
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .strokeBorder(
                         LinearGradient(
@@ -97,55 +171,109 @@ public struct LiquidGlassModifier: ViewModifier {
     }
 }
 
+// MARK: - Glass Container
+
+/// A container that synchronizes liquid glass refraction across child elements on macOS 26+.
+/// Uses `GlassEffectContainer` on macOS 26+, or `HStack` on earlier versions.
+public struct LiquidGlassContainer<Content: View>: View {
+    private let spacing: CGFloat?
+    private let content: Content
+
+    public init(spacing: CGFloat? = nil, @ViewBuilder content: () -> Content) {
+        self.spacing = spacing
+        self.content = content()
+    }
+
+    public var body: some View {
+        if #available(macOS 26, *) {
+            GlassEffectContainer(spacing: spacing) {
+                content
+            }
+        } else {
+            HStack(spacing: spacing) {
+                content
+            }
+        }
+    }
+}
+
+// MARK: - Ambient Background
+
+/// Provides subtle chromatic depth behind glass elements.
+/// On macOS 26+, kept clean as native `.glassEffect()` handles real optical refraction.
+/// On macOS 14-15, provides simulated chromatic orbs that illuminate through frosted materials.
 public struct LiquidAmbientBackground: View {
     public init() {}
 
     public var body: some View {
-        ZStack {
-            // Base window tint
+        if #available(macOS 26, *) {
+            // Native glass handles its own refraction with real optical caustic shaders
             Color(nsColor: .windowBackgroundColor)
+                .ignoresSafeArea()
+        } else {
+            // Simulated chromatic orbs for pre-macOS 26
+            ZStack {
+                Color(nsColor: .windowBackgroundColor)
 
-            // Deep chromatic orbs that subtly illuminate through the frosted glass
-            GeometryReader { geo in
-                ZStack {
-                    Circle()
-                        .fill(
-                            RadialGradient(
-                                colors: [Color.blue.opacity(0.12), Color.clear],
-                                center: .center,
-                                startRadius: 0,
-                                endRadius: geo.size.width * 0.4
+                GeometryReader { geo in
+                    ZStack {
+                        Circle()
+                            .fill(
+                                RadialGradient(
+                                    colors: [Color.blue.opacity(0.12), Color.clear],
+                                    center: .center,
+                                    startRadius: 0,
+                                    endRadius: geo.size.width * 0.4
+                                )
                             )
-                        )
-                        .frame(width: geo.size.width * 0.7)
-                        .offset(x: -geo.size.width * 0.2, y: -geo.size.height * 0.2)
-                        .blur(radius: 50)
+                            .frame(width: geo.size.width * 0.7)
+                            .offset(x: -geo.size.width * 0.2, y: -geo.size.height * 0.2)
+                            .blur(radius: 50)
 
-                    Circle()
-                        .fill(
-                            RadialGradient(
-                                colors: [Color.purple.opacity(0.08), Color.clear],
-                                center: .center,
-                                startRadius: 0,
-                                endRadius: geo.size.width * 0.4
+                        Circle()
+                            .fill(
+                                RadialGradient(
+                                    colors: [Color.purple.opacity(0.08), Color.clear],
+                                    center: .center,
+                                    startRadius: 0,
+                                    endRadius: geo.size.width * 0.4
+                                )
                             )
-                        )
-                        .frame(width: geo.size.width * 0.6)
-                        .offset(x: geo.size.width * 0.3, y: geo.size.height * 0.1)
-                        .blur(radius: 60)
+                            .frame(width: geo.size.width * 0.6)
+                            .offset(x: geo.size.width * 0.3, y: geo.size.height * 0.1)
+                            .blur(radius: 60)
+                    }
                 }
             }
+            .ignoresSafeArea()
         }
-        .ignoresSafeArea()
     }
 }
 
+// MARK: - View Extension
+
 public extension View {
+    /// Applies Liquid Glass styling.
+    ///
+    /// On macOS 26+, uses Apple's native `.glassEffect()` with real refraction, lensing, and caustics.
+    /// On macOS 14-15, falls back to a frosted material simulation with specular highlights.
+    ///
+    /// - Parameters:
+    ///   - cornerRadius: Corner radius of the glass shape.
+    ///   - intensity: Visual intensity (`.subtle`, `.standard`, `.prominent`, `.interactive`).
+    ///   - tintColor: Optional tint applied to the glass surface.
+    ///   - isInteractive: Whether the glass responds to hover/press (macOS 26+ only).
     func liquidGlass(
         cornerRadius: CGFloat = 16,
         intensity: LiquidGlassIntensity = .standard,
-        tintColor: Color? = nil
+        tintColor: Color? = nil,
+        isInteractive: Bool = false
     ) -> some View {
-        self.modifier(LiquidGlassModifier(cornerRadius: cornerRadius, intensity: intensity, tintColor: tintColor))
+        self.modifier(LiquidGlassModifier(
+            cornerRadius: cornerRadius,
+            intensity: intensity,
+            tintColor: tintColor,
+            isInteractive: isInteractive
+        ))
     }
 }

@@ -93,7 +93,7 @@ struct StoreView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            // Live Download Progress HUD overlay during CRX download
+            // Live Download Progress HUD overlay during CRX download (uses Liquid Glass)
             if viewModel.isDownloading {
                 VStack {
                     Spacer()
@@ -119,12 +119,7 @@ struct StoreView: View {
                     }
                     .padding(.horizontal, 20)
                     .padding(.vertical, 14)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                            .stroke(Color(nsColor: .separatorColor).opacity(0.4), lineWidth: 1)
-                    )
-                    .shadow(color: .black.opacity(0.18), radius: 12, y: 6)
+                    .liquidGlass(cornerRadius: 14, intensity: .prominent)
                     .padding(.bottom, 24)
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))

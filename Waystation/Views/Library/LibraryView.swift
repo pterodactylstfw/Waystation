@@ -207,7 +207,7 @@ public struct LibraryView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
-        .background(.ultraThinMaterial)
+        .liquidGlass(cornerRadius: 0, intensity: .subtle)
     }
 
     // MARK: - Floating Attention Card (Only when Safari needs attention)

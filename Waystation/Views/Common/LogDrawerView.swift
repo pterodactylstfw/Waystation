@@ -25,7 +25,7 @@ public struct LogDrawerView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .background(.ultraThinMaterial)
+        .liquidGlass(cornerRadius: 0, intensity: .standard)
         .overlay(
             Rectangle()
                 .frame(height: 1)
@@ -118,23 +118,28 @@ public struct LogDrawerView: View {
                     ForEach(viewModel.entries) { entry in
                         HStack(alignment: .top, spacing: 8) {
                             Text(entry.formattedTime)
-                                .font(.system(size: 11, design: .monospaced))
-                                .foregroundStyle(.secondary.opacity(0.7))
+                                .font(.system(size: 10, weight: .regular, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 58, alignment: .leading)
 
                             Text(entry.text)
-                                .font(.system(size: 11, design: .monospaced))
+                                .font(.system(size: 11, weight: .regular, design: .monospaced))
                                 .foregroundStyle(entry.isError ? Color.red : Color.primary)
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .id(entry.id)
                     }
                 }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
             }
-            .background(Color.black.opacity(0.3))
+            .background(Color(nsColor: .textBackgroundColor).opacity(0.35))
             .onChange(of: viewModel.entries.count) { _, _ in
                 if let last = viewModel.entries.last {
-                    proxy.scrollTo(last.id, anchor: .bottom)
+                    withAnimation(.easeOut(duration: 0.15)) {
+                        proxy.scrollTo(last.id, anchor: .bottom)
+                    }
                 }
             }
         }

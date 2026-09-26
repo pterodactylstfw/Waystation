@@ -4,6 +4,7 @@ import SwiftUI
 /// Conforms to AD-1 and integrates Story 1.1, Story 1.4, Story 2.1, and Story 3.1.
 public struct MainView: View {
     @State private var appState = AppState()
+    @State private var showOnboarding = OnboardingView.shouldShow
 
     public init() {}
 
@@ -58,6 +59,9 @@ public struct MainView: View {
                 }
                 .help("Open Safari Setup & Persistence Guide (⌘/)")
             }
+        }
+        .sheet(isPresented: $showOnboarding) {
+            OnboardingView()
         }
         .sheet(isPresented: $appState.showHelpGuide) {
             HelpGuideView()
